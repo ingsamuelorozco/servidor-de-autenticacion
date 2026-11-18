@@ -1,0 +1,126 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Servidor de Autenticación por Capas</title>
+  <meta name="description" content="Demostración interactiva de cómo funciona un servidor de autenticación, capa por capa. Exposición - Universidad Santiago de Cali.">
+  <link rel="stylesheet" href="css/estilos.css">
+</head>
+<body>
+
+  <header class="encabezado">
+    <div class="encabezado-texto">
+      <p class="institucion">Universidad Santiago de Cali &middot; Exposición</p>
+      <h1>¿Cómo funciona un servidor de autenticación?</h1>
+      <p class="bajada">Escribe tus credenciales y mira, capa por capa, todo lo que pasa desde que das clic hasta que el servidor te deja entrar.</p>
+    </div>
+    <div class="controles">
+      <div class="modo" role="group" aria-label="Modo de ejecución">
+        <button type="button" id="modoPaso" class="activo" aria-pressed="true">Paso a paso</button>
+        <button type="button" id="modoAuto" aria-pressed="false">Automático</button>
+      </div>
+      <button type="button" id="btnSiguiente" class="btn btn-primario" disabled title="También con la flecha derecha o el control de presentaciones">Siguiente paso &rarr;</button>
+      <button type="button" id="btnReiniciar" class="btn btn-secundario">Reiniciar todo</button>
+    </div>
+  </header>
+
+  <div id="avisoCripto" class="aviso" hidden>
+    Este navegador no tiene disponible la Web Crypto API. Abre la página con Chrome, Edge o Firefox actualizados (desde un archivo local o desde https).
+  </div>
+
+  <main class="tablero">
+
+    <!-- Columna 1: lo que ve el usuario -->
+    <section class="columna columna-cliente" aria-labelledby="tituloCliente">
+      <h2 id="tituloCliente" class="titulo-columna">Lo que ve el usuario</h2>
+
+      <div class="tarjeta" id="tarjetaLogin">
+        <h3>Iniciar sesión</h3>
+        <form id="formLogin" novalidate>
+          <label class="campo">
+            <span>Usuario</span>
+            <input id="usuario" name="usuario" autocomplete="off" spellcheck="false" placeholder="ej: ana">
+          </label>
+          <label class="campo">
+            <span>Contraseña</span>
+            <span class="campo-clave">
+              <input id="contrasena" name="contrasena" type="password" autocomplete="off" placeholder="••••••••">
+              <button type="button" id="verClave" class="btn-ver" aria-label="Mostrar contraseña">Ver</button>
+            </span>
+          </label>
+          <button type="submit" id="btnEntrar" class="btn btn-primario btn-bloque" disabled>Preparando servidor...</button>
+          <p class="mensaje" id="mensajeLogin" role="status" aria-live="polite"></p>
+        </form>
+      </div>
+
+      <div class="tarjeta" id="tarjetaMfa" hidden>
+        <h3>Verificación en dos pasos</h3>
+        <div class="telefono" aria-label="Teléfono simulado del usuario">
+          <span class="telefono-app">Mensaje de Autenticador</span>
+          <span class="telefono-codigo" id="codigoTelefono">------</span>
+          <span class="telefono-vence" id="venceTelefono"></span>
+        </div>
+        <form id="formMfa" novalidate>
+          <label class="campo">
+            <span>Escribe el código que llegó al teléfono</span>
+            <input id="codigoMfa" inputmode="numeric" maxlength="6" autocomplete="off" placeholder="000000">
+          </label>
+          <button type="submit" class="btn btn-primario btn-bloque">Verificar código</button>
+        </form>
+      </div>
+
+      <div class="tarjeta" id="tarjetaSesion" hidden>
+        <h3>Sesión iniciada</h3>
+        <p class="saludo">Hola, <strong id="nombreSesion"></strong> <span class="chip" id="rolSesion"></span></p>
+        <p class="pequeno">El navegador guardó este token y lo enviará en cada petición:</p>
+        <code class="token-corto" id="tokenCorto"></code>
+        <p class="pequeno" id="venceSesion"></p>
+        <div class="acciones">
+          <button type="button" id="btnPerfil" class="btn btn-primario btn-bloque">Pedir mi perfil (GET /api/perfil)</button>
+          <button type="button" id="btnAlterar" class="btn btn-peligro btn-bloque">Alterar el token (volverme admin)</button>
+          <button type="button" id="btnVencido" class="btn btn-secundario btn-bloque">Usar un token vencido</button>
+          <button type="button" id="btnSalir" class="btn btn-texto btn-bloque">Cerrar sesión</button>
+        </div>
+      </div>
+
+      <div class="tarjeta tarjeta-suave">
+        <h3>Usuarios de prueba</h3>
+        <table class="tabla-pruebas">
+          <thead><tr><th>Usuario</th><th>Contraseña</th><th>MFA</th></tr></thead>
+          <tbody id="tablaPruebas"></tbody>
+        </table>
+        <p class="pequeno">Prueba también: una contraseña mala tres veces seguidas, o un usuario que no existe.</p>
+      </div>
+    </section>
+
+    <!-- Columna 2: las capas -->
+    <section class="columna columna-capas" aria-labelledby="tituloCapas">
+      <h2 id="tituloCapas" class="titulo-columna">El recorrido por capas</h2>
+      <ol id="listaCapas" class="capas"></ol>
+    </section>
+
+    <!-- Columna 3: el detalle -->
+    <section class="columna columna-inspector" aria-labelledby="tituloInspector">
+      <h2 id="tituloInspector" class="titulo-columna">¿Qué está pasando?</h2>
+      <div class="tarjeta inspector" id="inspector" aria-live="polite"></div>
+    </section>
+
+  </main>
+
+  <section class="bitacora-seccion" aria-labelledby="tituloBitacora">
+    <h2 id="tituloBitacora" class="titulo-columna">Bitácora de peticiones al servidor</h2>
+    <p class="pequeno" id="bitacoraVacia">Todavía no se ha enviado ninguna petición.</p>
+    <ol id="bitacora" class="bitacora"></ol>
+  </section>
+
+  <footer class="pie">
+    <p>Demostración educativa. El "servidor" corre dentro del navegador con JavaScript para poder ver cada paso; la criptografía sí es real (PBKDF2, AES-GCM y HMAC-SHA256 de la Web Crypto API). Un sistema real separa cliente y servidor en máquinas distintas.</p>
+    <p>Universidad Santiago de Cali</p>
+  </footer>
+
+  <script src="js/cripto.js"></script>
+  <script src="js/servidor.js"></script>
+  <script src="js/app.js"></script>
+</body>
+</html>
