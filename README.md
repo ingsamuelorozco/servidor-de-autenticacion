@@ -12,10 +12,7 @@ Abajo hay una bitácora con todas las peticiones y sus códigos HTTP.
 
 ## Cómo abrirlo
 
-No necesita instalar nada ni internet.
-
-- Abrir `index.html` con doble clic (Chrome, Edge o Firefox), o
-- Entrar a la versión publicada en GitHub Pages: https://ingsamuelorozco.github.io/servidor-de-autenticacion/
+No necesita instalar nada ni internet. Solo hay que abrir `index.html` con doble clic en Chrome, Edge o Firefox.
 
 ## Usuarios de prueba
 
