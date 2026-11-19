@@ -2,13 +2,13 @@
 
 Demostración interactiva para la exposición de **Redes y seguridad** en la **Universidad Santiago de Cali**. Muestra cómo un servidor AAA decide **quién entra a la red** (autenticación), **qué puede hacer** (autorización) y **deja registro de lo que hizo** (contabilidad), paquete por paquete.
 
-Arriba está la arquitectura: **Cliente → NAS → Servidor AAA → Base de usuarios**, con una flecha que indica qué mensaje está viajando en cada momento. Debajo hay tres columnas:
+Todo cabe en una sola pantalla, sin hacer scroll. Arriba está la arquitectura: **Cliente → NAS → Servidor AAA → Base de usuarios**, con una flecha que indica qué mensaje está viajando en cada momento. Debajo hay tres columnas:
 
-1. **Lo que ve el usuario:** el formulario para conectarse al Wi-Fi, el teléfono con el código de verificación y la sesión conectada (VLAN, IP, ACL, tiempo y datos consumidos).
-2. **La secuencia RADIUS:** los 8 pasos, que se marcan como superados, rechazados u omitidos.
-3. **¿Qué está pasando?:** cada paquete dibujado como en el formato de RADIUS (Code, Identifier, Length, Authenticator y atributos TLV), sus bytes en hexadecimal y los cálculos de MD5.
+1. **El usuario:** el formulario para conectarse al Wi-Fi, el teléfono con el código de verificación, la sesión conectada (VLAN, IP, ACL, tiempo y datos) y los últimos paquetes que pasaron por la red.
+2. **La secuencia RADIUS:** los 8 pasos, que se marcan con ✓, ✗ u omitido según avanza el proceso.
+3. **Paso actual:** una explicación corta y el paquete RADIUS de ese paso (Code, Identifier, Length, Authenticator y atributos TLV).
 
-Abajo se van guardando todos los paquetes que pasan por la red, con su código.
+El detalle técnico aparece al pasar el mouse sobre los botones **i**: bytes en hexadecimal, cálculos de MD5, comparación de hashes, reglas de las ACL, la comparación RADIUS frente a TACACS+, etc.
 
 ## Cómo abrirlo
 

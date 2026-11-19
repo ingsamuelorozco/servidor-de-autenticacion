@@ -12,8 +12,7 @@
   <header class="encabezado">
     <div class="encabezado-texto">
       <p class="institucion">Redes y seguridad &middot; Universidad Santiago de Cali</p>
-      <h1>Servidor de autenticación AAA con RADIUS</h1>
-      <p class="bajada">Conéctate a la red y mira cada paquete que viaja entre el cliente, el NAS y el servidor AAA: <strong>quién eres</strong> (autenticación), <strong>qué puedes hacer</strong> (autorización) y <strong>qué hiciste</strong> (contabilidad).</p>
+      <h1>Servidor de autenticación AAA con RADIUS <button type="button" class="info" data-info="acerca" aria-label="Más información">i</button></h1>
     </div>
     <div class="controles">
       <div class="modo" role="group" aria-label="Modo de ejecución">
@@ -21,7 +20,7 @@
         <button type="button" id="modoAuto" aria-pressed="false">Automático</button>
       </div>
       <button type="button" id="btnSiguiente" class="btn btn-primario" disabled title="También con la flecha derecha o el control de presentaciones">Siguiente paso &rarr;</button>
-      <button type="button" id="btnReiniciar" class="btn btn-secundario">Reiniciar todo</button>
+      <button type="button" id="btnReiniciar" class="btn btn-secundario">Reiniciar</button>
     </div>
   </header>
 
@@ -32,38 +31,34 @@
   <!-- Arquitectura: Cliente - NAS - Servidor AAA - Base de usuarios -->
   <section class="arquitectura" aria-label="Arquitectura AAA">
     <div class="nodo" data-nodo="cliente">
-      <span class="nodo-titulo">Cliente</span>
+      <span class="nodo-titulo">Cliente <button type="button" class="info" data-info="nodo-cliente" aria-label="Qué es el cliente">i</button></span>
       <span class="nodo-sub">Portátil del usuario</span>
-      <code>MAC 3c:52:82:a1:7f:09</code>
     </div>
-    <div class="enlace" data-enlace="0"><span class="enlace-msg"></span><span class="enlace-linea"></span><span class="enlace-proto">802.1X / EAPOL</span></div>
+    <div class="enlace" data-enlace="0"><span class="enlace-msg"></span><span class="enlace-linea"></span><span class="enlace-proto">802.1X</span></div>
     <div class="nodo" data-nodo="nas">
-      <span class="nodo-titulo">NAS</span>
-      <span class="nodo-sub">AP-Biblioteca (Wi-Fi)</span>
-      <code>10.10.0.2</code>
+      <span class="nodo-titulo">NAS <button type="button" class="info" data-info="nodo-nas" aria-label="Qué es el NAS">i</button></span>
+      <span class="nodo-sub">AP Wi-Fi · 10.10.0.2</span>
     </div>
-    <div class="enlace" data-enlace="1"><span class="enlace-msg"></span><span class="enlace-linea"></span><span class="enlace-proto">RADIUS · UDP 1812 / 1813</span></div>
+    <div class="enlace" data-enlace="1"><span class="enlace-msg"></span><span class="enlace-linea"></span><span class="enlace-proto">RADIUS · UDP 1812/1813</span></div>
     <div class="nodo" data-nodo="servidor">
-      <span class="nodo-titulo">Servidor AAA</span>
-      <span class="nodo-sub">RADIUS</span>
-      <code>10.10.0.10</code>
+      <span class="nodo-titulo">Servidor AAA <button type="button" class="info" data-info="nodo-servidor" aria-label="Qué es el servidor AAA">i</button></span>
+      <span class="nodo-sub">RADIUS · 10.10.0.10</span>
     </div>
-    <div class="enlace" data-enlace="2"><span class="enlace-msg"></span><span class="enlace-linea"></span><span class="enlace-proto">consulta local</span></div>
+    <div class="enlace" data-enlace="2"><span class="enlace-msg"></span><span class="enlace-linea"></span><span class="enlace-proto">consulta</span></div>
     <div class="nodo" data-nodo="bd">
-      <span class="nodo-titulo">Base de usuarios</span>
-      <span class="nodo-sub">Local (en la vida real: AD o LDAP)</span>
-      <code>hash PBKDF2</code>
+      <span class="nodo-titulo">Base de usuarios <button type="button" class="info" data-info="nodo-bd" aria-label="Qué hay en la base de usuarios">i</button></span>
+      <span class="nodo-sub">AD, LDAP o local</span>
     </div>
   </section>
 
   <main class="tablero">
 
-    <!-- Columna 1: lo que ve el usuario -->
-    <section class="columna columna-cliente" aria-labelledby="tituloCliente">
-      <h2 id="tituloCliente" class="titulo-columna">Lo que ve el usuario</h2>
+    <!-- Columna 1: el usuario -->
+    <section class="columna" aria-labelledby="tituloCliente">
+      <h2 id="tituloCliente" class="titulo-columna">El usuario</h2>
 
       <div class="tarjeta" id="tarjetaLogin">
-        <h3>Conectarse a la red <span class="chip">USC-Campus</span></h3>
+        <h3>Conectarse a <span class="chip">USC-Campus</span></h3>
         <form id="formLogin" novalidate>
           <label class="campo">
             <span>Usuario</span>
@@ -78,81 +73,73 @@
           </label>
           <label class="casilla">
             <input type="checkbox" id="secretoMalo">
-            <span>Simular un NAS con el <strong>secreto compartido equivocado</strong></span>
+            <span>NAS con secreto equivocado</span>
+            <button type="button" class="info" data-info="secreto" aria-label="Qué hace esta opción">i</button>
           </label>
-          <button type="submit" id="btnEntrar" class="btn btn-primario btn-bloque" disabled>Preparando servidor...</button>
+          <button type="submit" id="btnEntrar" class="btn btn-primario btn-bloque" disabled>Preparando...</button>
           <p class="mensaje" id="mensajeLogin" role="status" aria-live="polite"></p>
         </form>
+        <p class="pruebas">
+          Prueba:
+          <button type="button" class="btn-relleno" data-usuario="ana" data-clave="usc2026">ana</button>
+          <button type="button" class="btn-relleno" data-usuario="admin" data-clave="admin123">admin</button>
+          <button type="button" class="info" data-info="pruebas" aria-label="Usuarios de prueba">i</button>
+        </p>
       </div>
 
       <div class="tarjeta" id="tarjetaMfa" hidden>
-        <h3>Verificación en dos pasos</h3>
-        <p class="pequeno sin-margen" id="textoDesafio"></p>
+        <h3>Segundo factor</h3>
         <div class="telefono" aria-label="Teléfono simulado del usuario">
-          <span class="telefono-app">Mensaje del Autenticador</span>
+          <span class="telefono-app">Código del autenticador</span>
           <span class="telefono-codigo" id="codigoTelefono">------</span>
           <span class="telefono-vence" id="venceTelefono"></span>
         </div>
         <form id="formMfa" novalidate>
           <label class="campo">
-            <span>Escribe el código que llegó al teléfono</span>
+            <span>Escribe el código</span>
             <input id="codigoMfa" inputmode="numeric" maxlength="6" autocomplete="off" placeholder="000000">
           </label>
-          <button type="submit" class="btn btn-primario btn-bloque">Verificar código</button>
+          <button type="submit" class="btn btn-primario btn-bloque">Verificar</button>
         </form>
       </div>
 
       <div class="tarjeta" id="tarjetaSesion" hidden>
-        <h3>Conectado a USC-Campus</h3>
-        <p class="saludo"><strong id="nombreSesion"></strong> <span class="chip" id="grupoSesion"></span></p>
+        <h3>Conectado <span class="chip" id="grupoSesion"></span></h3>
         <dl class="datos-sesion">
+          <dt>Usuario</dt><dd id="nombreSesion"></dd>
           <dt>VLAN</dt><dd id="vlanSesion"></dd>
-          <dt>Dirección IP</dt><dd id="ipSesion"></dd>
+          <dt>IP</dt><dd id="ipSesion"></dd>
           <dt>ACL</dt><dd id="aclSesion"></dd>
-          <dt>Privilegio</dt><dd id="privSesion"></dd>
           <dt>Tiempo</dt><dd id="tiempoSesion">0 s</dd>
           <dt>Datos</dt><dd id="datosSesion">0 B</dd>
         </dl>
         <div class="acciones">
-          <button type="button" id="btnInterim" class="btn btn-primario btn-bloque">Enviar reporte (Interim-Update)</button>
+          <button type="button" id="btnInterim" class="btn btn-primario btn-bloque">Reporte (Interim-Update)</button>
           <button type="button" id="btnSalir" class="btn btn-secundario btn-bloque">Desconectarse (Stop)</button>
         </div>
       </div>
 
-      <div class="tarjeta tarjeta-suave">
-        <h3>Usuarios de prueba</h3>
-        <table class="tabla-pruebas">
-          <thead><tr><th>Usuario</th><th>Contraseña</th><th>Segundo factor</th></tr></thead>
-          <tbody id="tablaPruebas"></tbody>
-        </table>
-        <p class="pequeno">Prueba también: una contraseña mala, un usuario que no existe o un código de verificación equivocado.</p>
+      <div class="red-log">
+        <h2 class="titulo-columna">Paquetes en la red</h2>
+        <ol id="bitacora" class="bitacora"></ol>
       </div>
     </section>
 
     <!-- Columna 2: la secuencia -->
-    <section class="columna columna-capas" aria-labelledby="tituloCapas">
+    <section class="columna" aria-labelledby="tituloCapas">
       <h2 id="tituloCapas" class="titulo-columna">La secuencia RADIUS</h2>
       <ol id="listaCapas" class="capas"></ol>
     </section>
 
-    <!-- Columna 3: el detalle -->
-    <section class="columna columna-inspector" aria-labelledby="tituloInspector">
-      <h2 id="tituloInspector" class="titulo-columna">¿Qué está pasando?</h2>
+    <!-- Columna 3: el paso actual -->
+    <section class="columna" aria-labelledby="tituloInspector">
+      <h2 id="tituloInspector" class="titulo-columna">Paso actual</h2>
       <div class="tarjeta inspector" id="inspector" aria-live="polite"></div>
     </section>
 
   </main>
 
-  <section class="bitacora-seccion" aria-labelledby="tituloBitacora">
-    <h2 id="tituloBitacora" class="titulo-columna">Paquetes RADIUS capturados en la red</h2>
-    <p class="pequeno" id="bitacoraVacia">Todavía no ha pasado ningún paquete.</p>
-    <ol id="bitacora" class="bitacora"></ol>
-  </section>
-
-  <footer class="pie">
-    <p>Demostración educativa. El NAS y el servidor AAA corren dentro del navegador con JavaScript para poder ver cada paso, pero los paquetes RADIUS se arman byte a byte como dicen los RFC 2865 y 2866, con MD5 y HMAC-MD5 reales. Por simplicidad la contraseña viaja como en PAP; en una red 802.1X real va dentro de un túnel EAP (PEAP o EAP-TTLS).</p>
-    <p>Universidad Santiago de Cali</p>
-  </footer>
+  <div id="tip" class="tip" role="tooltip" hidden></div>
 
   <script src="js/cripto.js"></script>
   <script src="js/radius.js"></script>
