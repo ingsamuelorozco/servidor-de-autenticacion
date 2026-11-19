@@ -11,16 +11,8 @@
 
   <header class="encabezado">
     <div class="encabezado-texto">
-      <p class="institucion">Redes y seguridad &middot; Universidad Santiago de Cali</p>
+      <p class="institucion">Redes y comunicaciones, Universidad Santiago de Cali</p>
       <h1>Servidor de autenticación AAA con RADIUS <button type="button" class="info" data-info="acerca" aria-label="Más información">i</button></h1>
-    </div>
-    <div class="controles">
-      <div class="modo" role="group" aria-label="Modo de ejecución">
-        <button type="button" id="modoPaso" class="activo" aria-pressed="true">Paso a paso</button>
-        <button type="button" id="modoAuto" aria-pressed="false">Automático</button>
-      </div>
-      <button type="button" id="btnSiguiente" class="btn btn-primario" disabled title="También con la flecha derecha o el control de presentaciones">Siguiente paso &rarr;</button>
-      <button type="button" id="btnReiniciar" class="btn btn-secundario">Reiniciar</button>
     </div>
   </header>
 
@@ -37,14 +29,14 @@
     <div class="enlace" data-enlace="0"><span class="enlace-msg"></span><span class="enlace-linea"></span><span class="enlace-proto">802.1X</span></div>
     <div class="nodo" data-nodo="nas">
       <span class="nodo-titulo">NAS <button type="button" class="info" data-info="nodo-nas" aria-label="Qué es el NAS">i</button></span>
-      <span class="nodo-sub">AP Wi-Fi · 10.10.0.2</span>
+      <span class="nodo-sub">AP Wi-Fi 10.10.0.2</span>
     </div>
-    <div class="enlace" data-enlace="1"><span class="enlace-msg"></span><span class="enlace-linea"></span><span class="enlace-proto">RADIUS · UDP 1812/1813</span></div>
+    <div class="enlace" data-enlace="1"><span class="enlace-msg"></span><span class="enlace-linea"></span><span class="enlace-proto">RADIUS, UDP 1812 y 1813</span></div>
     <div class="nodo" data-nodo="servidor">
       <span class="nodo-titulo">Servidor AAA <button type="button" class="info" data-info="nodo-servidor" aria-label="Qué es el servidor AAA">i</button></span>
-      <span class="nodo-sub">RADIUS · 10.10.0.10</span>
+      <span class="nodo-sub">RADIUS 10.10.0.10</span>
     </div>
-    <div class="enlace" data-enlace="2"><span class="enlace-msg"></span><span class="enlace-linea"></span><span class="enlace-proto">consulta</span></div>
+    <div class="enlace" data-enlace="2"><span class="enlace-msg"></span><span class="enlace-linea"></span><span class="enlace-proto">LDAP o SQL</span></div>
     <div class="nodo" data-nodo="bd">
       <span class="nodo-titulo">Base de usuarios <button type="button" class="info" data-info="nodo-bd" aria-label="Qué hay en la base de usuarios">i</button></span>
       <span class="nodo-sub">AD, LDAP o local</span>
@@ -58,7 +50,7 @@
       <h2 id="tituloCliente" class="titulo-columna">El usuario</h2>
 
       <div class="tarjeta" id="tarjetaLogin">
-        <h3>Conectarse a <span class="chip">USC-Campus</span></h3>
+        <h3>Conectarse a <span class="chip">USC LIBRE</span></h3>
         <form id="formLogin" novalidate>
           <label class="campo">
             <span>Usuario</span>
@@ -70,11 +62,6 @@
               <input id="contrasena" name="contrasena" type="password" autocomplete="off" placeholder="••••••••">
               <button type="button" id="verClave" class="btn-ver" aria-label="Mostrar contraseña">Ver</button>
             </span>
-          </label>
-          <label class="casilla">
-            <input type="checkbox" id="secretoMalo">
-            <span>NAS con secreto equivocado</span>
-            <button type="button" class="info" data-info="secreto" aria-label="Qué hace esta opción">i</button>
           </label>
           <button type="submit" id="btnEntrar" class="btn btn-primario btn-bloque" disabled>Preparando...</button>
           <p class="mensaje" id="mensajeLogin" role="status" aria-live="polite"></p>
@@ -129,6 +116,7 @@
     <section class="columna" aria-labelledby="tituloCapas">
       <h2 id="tituloCapas" class="titulo-columna">La secuencia RADIUS</h2>
       <ol id="listaCapas" class="capas"></ol>
+      <p id="pistaCapas" class="pista" hidden>Haz clic en un paso para volver a leerlo. Si tiene varias partes, haz clic otra vez.</p>
     </section>
 
     <!-- Columna 3: el paso actual -->

@@ -7,13 +7,12 @@
 (() => {
   'use strict';
 
-  const ESPERA_AUTO_MS = 2800;
+  const ESPERA_AUTO_MS = 10000;
   const MAX_LOG = 9;
 
   /* El NAS de la demo: un punto de acceso Wi-Fi con 802.1X. */
-  const NAS = { ip: '10.10.0.2', nombre: 'AP-Biblioteca', puerto: 7, ssid: 'USC-Campus', mac: 'A0-B1-C2-D3-E4-F5' };
+  const NAS = { ip: '10.10.0.2', nombre: 'AP-Biblioteca', puerto: 7, ssid: 'USC LIBRE', mac: 'A0-B1-C2-D3-E4-F5' };
   const MAC_CLIENTE = '3C-52-82-A1-7F-09';
-  const SECRETO_EQUIVOCADO = 'secreto-viejo-2019';
 
   const ACLS = {
     'ACL-ESTUDIANTES': ['permit tcp any any eq 80, 443   (navegar)', 'permit udp any any eq 53         (DNS)', 'deny   ip any 10.99.0.0/16       (red de gestión)'],
@@ -46,15 +45,10 @@
   const el = {
     capas: $('listaCapas'),
     inspector: $('inspector'),
-    siguiente: $('btnSiguiente'),
-    reiniciar: $('btnReiniciar'),
-    modoPaso: $('modoPaso'),
-    modoAuto: $('modoAuto'),
     formLogin: $('formLogin'),
     usuario: $('usuario'),
     contrasena: $('contrasena'),
     verClave: $('verClave'),
-    secretoMalo: $('secretoMalo'),
     entrar: $('btnEntrar'),
     mensaje: $('mensajeLogin'),
     tarjetaLogin: $('tarjetaLogin'),
@@ -74,13 +68,17 @@
     interim: $('btnInterim'),
     salir: $('btnSalir'),
     bitacora: $('bitacora'),
+    pistaCapas: $('pistaCapas'),
+    arquitectura: document.querySelector('.arquitectura'),
     avisoCripto: $('avisoCripto'),
     tip: $('tip'),
   };
 
   const estado = {
     listo: false,
-    modo: 'paso',
+    corriendo: false,
+    historial: {},
+    vista: { id: null, n: 0 },
     flujo: 0,
     resolverPaso: null,
     temporizador: null,
@@ -130,14 +128,13 @@
         <tr><td>Cifrado</td><td>Solo la contraseña</td><td>Todo el cuerpo</td></tr>
         <tr><td>Uso típico</td><td>802.1X, Wi-Fi, VPN</td><td>Administrar equipos</td></tr>
         <tr><td>Estándar</td><td>IETF (RFC 2865)</td><td>Cisco</td></tr></table>
-      <p style="margin-top:8px">Avanza con <em>Siguiente paso</em>, la flecha derecha o el control de presentaciones. Por simplicidad la contraseña viaja como en PAP; en 802.1X real va dentro de un túnel EAP (PEAP o EAP-TTLS).</p>`,
+      <p style="margin-top:8px">Los pasos avanzan solos. Por simplicidad la contraseña viaja como en PAP; en 802.1X real va dentro de un túnel EAP (PEAP o EAP-TTLS).</p>`,
     'nodo-cliente': () => `<strong class="tip-titulo">Cliente</strong><p>El usuario o equipo que quiere entrar a la red. En 802.1X se le llama <em>suplicante</em>.</p><p>MAC: <code>${MAC_CLIENTE}</code></p>`,
     'nodo-nas': () => `<strong class="tip-titulo">NAS (Network Access Server)</strong><p>El equipo de red donde se conecta el cliente: switch, punto de acceso, router o concentrador VPN. No decide nada: le pregunta al servidor AAA y aplica la respuesta.</p><p><code>${NAS.nombre}</code> · <code>${NAS.ip}</code> · Wi-Fi <code>${NAS.ssid}</code></p>`,
     'nodo-servidor': () => `<strong class="tip-titulo">Servidor AAA (RADIUS)</strong><p>Toma las decisiones de autenticación y autorización y guarda la contabilidad. Ejemplos: FreeRADIUS, Cisco ISE, Microsoft NPS.</p>
       <table><tr><th>NAS registrado</th><th>Secreto compartido</th></tr><tr><td>${NAS.ip} (${NAS.nombre})</td><td><code>${esc(Servidor.cliente(NAS.ip).secreto)}</code></td></tr></table>
       <p style="margin-top:8px">El secreto compartido <strong>nunca viaja por la red</strong>: se configura a mano en el NAS y en el servidor.</p>`,
     'nodo-bd': () => `<strong class="tip-titulo">Base de usuarios</strong><p>Donde están las cuentas. En empresas suele ser Active Directory o LDAP; aquí es local. <strong>No guarda contraseñas</strong>, solo salt y hash PBKDF2.</p>${tablaUsuarios(null)}`,
-    secreto: () => '<strong class="tip-titulo">Secreto compartido equivocado</strong><p>Simula un NAS mal configurado o un equipo intruso. El servidor no puede verificar la firma del paquete y lo <strong>descarta sin responder</strong>.</p>',
     pruebas: () => `<strong class="tip-titulo">Usuarios de prueba</strong>
       <table><tr><th>Usuario</th><th>Contraseña</th><th>2.º factor</th><th>Autorización</th></tr>
       <tr><td>ana</td><td><code>usc2026</code></td><td>no</td><td>VLAN 20, ACL-ESTUDIANTES</td></tr>
@@ -214,7 +211,7 @@
       html += '\n';
     }
     return `<strong class="tip-titulo">Bytes que viajan por el cable</strong><pre class="hexdump"><code>${html}</code></pre>
-      <p><span style="color:var(--hx-code)">■</span> Code · <span style="color:var(--hx-id)">■</span> Identifier · <span style="color:var(--hx-len)">■</span> Length · <span style="color:var(--hx-auth)">■</span> Authenticator · <span style="color:var(--hx-tl)">■</span> Type y Length · <span style="color:var(--hx-v1)">■</span> Value</p>`;
+      <p class="leyenda-hex"><span><span style="color:var(--hx-code)">■</span> Code</span><span><span style="color:var(--hx-id)">■</span> Identifier</span><span><span style="color:var(--hx-len)">■</span> Length</span><span><span style="color:var(--hx-auth)">■</span> Authenticator</span><span><span style="color:var(--hx-tl)">■</span> Type y Length</span><span><span style="color:var(--hx-v1)">■</span> Value</span></p>`;
   }
 
   /* Paquete compacto: cabecera en una fila y los atributos TLV en una tabla.
@@ -228,10 +225,11 @@
         <td><code>${esc(Radius.valorLegible(a.type, a.value))}</code></td>
       </tr>`).join('');
     return `
-      <div class="paquete">
-        <div class="pq-titulo"><span>Paquete RADIUS · ${p.length} bytes</span>${i(hexdump(bytes))}</div>
+      <div class="paquete" data-code="${p.code}">
+        <div class="pq-titulo"><span>Paquete RADIUS de ${p.length} bytes</span>${i(hexdump(bytes))}</div>
+        <div class="pq-regla" aria-hidden="true"><span>0</span><span>8</span><span>16</span><span>24<span>31</span></span></div>
         <div class="pq-fila">
-          <div class="pq-campo hx-code"><small>Code</small><strong>${p.code} · ${esc(Radius.CODIGOS[p.code])}</strong></div>
+          <div class="pq-campo hx-code"><small>Code</small><strong>${p.code} ${esc(Radius.CODIGOS[p.code])}</strong></div>
           <div class="pq-campo hx-id"><small>Identifier</small><strong>${p.id}</strong></div>
           <div class="pq-campo hx-len"><small>Length</small><strong>${p.length}</strong></div>
           <div class="pq-campo hx-auth"><small>Authenticator ${infoAutenticador ? i(infoAutenticador) : ''}</small><code>${hex(p.authenticator)}</code></div>
@@ -245,8 +243,11 @@
   /* ================= Diagrama de arquitectura ================= */
 
   function red(enlace, direccion, texto, tipo = 'normal') {
+    document.querySelector('.arquitectura').dataset.tipo = tipo;
     document.querySelectorAll('.enlace').forEach((e) => {
       const activo = Number(e.dataset.enlace) === enlace;
+      e.classList.remove('activo');
+      if (activo) void e.offsetWidth; // vuelve a correr el paquete por el cable
       e.classList.toggle('activo', activo);
       e.dataset.dir = activo ? direccion : '';
       e.dataset.tipo = activo ? tipo : '';
@@ -300,6 +301,10 @@
   /* Borra el contenido de las "i" que ya no están en pantalla */
   function podarInfos() {
     const vivos = new Set([...document.querySelectorAll('.info[data-info]')].map((b) => b.dataset.info));
+    // Las "i" de los pasos guardados siguen vivas para poder volver a verlos
+    Object.values(estado.historial).flat().forEach((v) => {
+      for (const m of v.html.matchAll(/data-info="(dd+)"/g)) vivos.add(m[1]);
+    });
     for (const clave of dinamicos.keys()) if (!vivos.has(clave)) dinamicos.delete(clave);
   }
 
@@ -312,13 +317,51 @@
     const n = CAPAS.findIndex((c) => c.id === id);
     el.inspector.innerHTML = `
       <div class="insp-cabecera">
-        <span class="insp-capa">Paso ${n + 1} &middot; ${CAPAS[n].nombre}</span>
+        <span class="insp-capa">Paso ${n + 1} de ${CAPAS.length}: ${CAPAS[n].nombre}</span>
         <span class="insignia" data-estado="${est}">${ESTADOS[est]}</span>
       </div>
       <h3>${titulo}${detalle ? i(detalle) : ''}</h3>
       <p class="insp-texto">${texto}</p>
       ${cuerpo}`;
+    guardarVista(id);
     podarInfos();
+  }
+
+  /* ================= Repasar los pasos al terminar ================= */
+
+  function guardarVista(id) {
+    (estado.historial[id] ||= []).push({
+      html: el.inspector.innerHTML,
+      arq: el.arquitectura.innerHTML,
+      tipo: el.arquitectura.dataset.tipo || '',
+    });
+  }
+
+  function verVista(id) {
+    const vistas = estado.historial[id];
+    if (estado.corriendo || !vistas) return;
+    const n = estado.vista.id === id ? (estado.vista.n + 1) % vistas.length : 0;
+    estado.vista = { id, n };
+    const v = vistas[n];
+    ocultarTip();
+    el.inspector.innerHTML = v.html;
+    el.arquitectura.innerHTML = v.arq;
+    el.arquitectura.dataset.tipo = v.tipo;
+    if (vistas.length > 1) {
+      const capa = el.inspector.querySelector('.insp-capa');
+      if (capa) capa.textContent += `, parte ${n + 1} de ${vistas.length}`;
+    }
+    enfocarCapa(id);
+  }
+
+  function permitirRepaso(si) {
+    el.capas.classList.toggle('navegable', si);
+    el.capas.querySelectorAll('.capa').forEach((li) => {
+      const tiene = si && Boolean(estado.historial[li.dataset.capa]);
+      li.toggleAttribute('data-vista', tiene);
+      if (tiene) { li.tabIndex = 0; li.setAttribute('role', 'button'); } else { li.removeAttribute('tabindex'); li.removeAttribute('role'); }
+    });
+    el.pistaCapas.hidden = !si || !Object.keys(estado.historial).length;
   }
 
   function mostrarIntro() {
@@ -344,14 +387,12 @@
 
   async function avanzar(id) {
     vigente(id);
-    el.siguiente.disabled = false;
     await new Promise((resolver) => {
       estado.resolverPaso = resolver;
-      if (estado.modo === 'auto') estado.temporizador = setTimeout(resolver, ESPERA_AUTO_MS);
+      estado.temporizador = setTimeout(resolver, ESPERA_AUTO_MS);
     });
     clearTimeout(estado.temporizador);
     estado.resolverPaso = null;
-    el.siguiente.disabled = true;
     vigente(id);
   }
 
@@ -359,19 +400,9 @@
     if (estado.resolverPaso) estado.resolverPaso();
   }
 
-  function cambiarModo(modo) {
-    estado.modo = modo;
-    el.modoPaso.classList.toggle('activo', modo === 'paso');
-    el.modoAuto.classList.toggle('activo', modo === 'auto');
-    el.modoPaso.setAttribute('aria-pressed', String(modo === 'paso'));
-    el.modoAuto.setAttribute('aria-pressed', String(modo === 'auto'));
-    clearTimeout(estado.temporizador);
-    if (modo === 'auto' && estado.resolverPaso) estado.temporizador = setTimeout(estado.resolverPaso, ESPERA_AUTO_MS);
-  }
-
   function bloquearUI(bloquear) {
     const sinListo = bloquear || !estado.listo;
-    [el.usuario, el.contrasena, el.secretoMalo, el.entrar].forEach((c) => { c.disabled = sinListo; });
+    [el.usuario, el.contrasena, el.entrar].forEach((c) => { c.disabled = sinListo; });
     [el.interim, el.salir].forEach((c) => { c.disabled = bloquear; });
   }
 
@@ -382,12 +413,15 @@
     if (estado.resolverMfa) estado.resolverMfa(null);
     estado.resolverPaso = null;
     estado.resolverMfa = null;
-    el.siguiente.disabled = true;
     ocultarMfa();
   }
 
   function iniciarFlujo() {
     cancelarFlujo();
+    estado.corriendo = true;
+    estado.historial = {};
+    estado.vista = { id: null, n: 0 };
+    permitirRepaso(false);
     bloquearUI(true);
     reiniciarCapas();
     return estado.flujo;
@@ -395,7 +429,8 @@
 
   function terminarFlujo(id) {
     if (id !== estado.flujo) return;
-    el.siguiente.disabled = true;
+    estado.corriendo = false;
+    permitirRepaso(true);
     bloquearUI(false);
   }
 
@@ -408,7 +443,7 @@
 
   /* Últimos paquetes que pasaron por la red */
   function registrar(code, nombre, ruta) {
-    const tipo = { 2: 'ok', 5: 'ok', 3: 'error', 11: 'espera', x: 'error' }[code] || 'nada';
+    const tipo = { 1: 'peticion', 2: 'ok', 5: 'ok', 3: 'error', 11: 'espera', 4: 'acct', x: 'error' }[code] || 'nada';
     const li = document.createElement('li');
     li.innerHTML = `<span class="b-codigo" data-tipo="${tipo}">${code === 'x' ? '✗' : esc(code)}</span>
       <span class="b-texto">${esc(nombre)} <small>${esc(ruta)}</small></span>`;
@@ -501,7 +536,7 @@
 
   function secretos() {
     const delServidor = Servidor.cliente(NAS.ip).secreto;
-    return { nas: el.secretoMalo.checked ? SECRETO_EQUIVOCADO : delServidor, servidor: delServidor };
+    return { nas: delServidor, servidor: delServidor };
   }
 
   /* El NAS arma un Access-Request con las credenciales */
@@ -748,14 +783,14 @@
 
       /* ---- Paso 7: NAS → Cliente ---- */
       const ip = `10.${a.vlan}.0.${40 + Math.floor(Math.random() * 150)}`;
-      red(0, 'izq', `Acceso concedido · VLAN ${a.vlan}`, 'ok');
+      red(0, 'izq', `Acceso concedido, VLAN ${a.vlan}`, 'ok');
       mostrar('aplicar', 'ok', {
         titulo: 'El NAS aplica la autorización',
         texto: `Abre el puerto, mete al portátil en la <strong>VLAN ${a.vlan}</strong> y le aplica la ACL. El servidor decidió; <strong>el NAS hace cumplir</strong>.`,
         detalle: `<pre><code>${json({ puerto: NAS.puerto, mac: MAC_CLIENTE, usuario: registro.usuario, vlan: a.vlan, acl: a.acl, ip })}</code></pre><pre><code>${ACLS[a.acl].join('\n')}</code></pre>`,
-        cuerpo: `<div class="dato-grande">VLAN <strong>${a.vlan}</strong> · IP <strong>${ip}</strong> · <strong>${esc(a.acl)}</strong></div>`,
+        cuerpo: `<div class="dato-grande"><span>VLAN <strong>${a.vlan}</strong></span><span>IP <strong>${ip}</strong></span><span>ACL <strong>${esc(a.acl)}</strong></span></div>`,
       });
-      registrar('—', `Acceso concedido · VLAN ${a.vlan}`, 'NAS → Cliente');
+      registrar('—', `Acceso concedido, VLAN ${a.vlan}`, 'NAS → Cliente');
       abrirSesion(registro, ip);
       await avanzar(id);
 
@@ -796,14 +831,14 @@
       'Interim-Update': 'Reporte periódico con el <strong>tiempo y los bytes</strong> consumidos hasta ahora.',
       Stop: 'El usuario se desconectó. El NAS cierra el puerto y reporta el <strong>total consumido</strong>.',
     };
-    red(1, 'der', `Accounting-Request (4) · ${tipo}`);
+    red(1, 'der', `Accounting-Request (4) ${tipo}`, 'acct');
     mostrar('acct', 'espera', {
-      titulo: `Accounting-Request (4) · ${tipo}`,
+      titulo: `Accounting-Request (4) ${tipo}`,
       texto: textos[tipo],
       detalle: '<p>En contabilidad no hay contraseña. El autenticador es MD5(paquete con 16 ceros + secreto): prueba que el reporte lo mandó un NAS que conoce el secreto.</p>',
       cuerpo: paquete(peticion, { destacar: [40, 46, 42, 43] }),
     });
-    registrarPaquete(peticion, `NAS → Servidor · ${tipo}`);
+    registrarPaquete(peticion, `NAS → Servidor, ${tipo}`);
     await avanzar(id);
 
     const ver = Radius.verificarAutenticador(peticion, new Uint8Array(16), sec);
@@ -814,7 +849,7 @@
       titulo: 'Accounting-Response (5)',
       texto: `El servidor guarda el registro y lo confirma. ${tipo === 'Stop' ? 'La sesión queda cerrada.' : 'Así se sabe quién se conectó, cuánto tiempo y cuánto consumió.'}`,
       detalle: `${chequeos([[ver.valido, 'El autenticador del reporte cuadra con el secreto']])}${paquete(respuesta)}`,
-      cuerpo: `<div class="dato-grande">Sesión <strong>${esc(fila.sesionId)}</strong> · ${esc(fila.usuario)} · ${duracion(fila.segundos)} · ↑ ${bytesLegibles(fila.entrada)} ↓ ${bytesLegibles(fila.salida)} · <strong>${fila.estado}</strong></div>`,
+      cuerpo: `<div class="dato-grande"><span>Sesión <strong>${esc(fila.sesionId)}</strong></span><span>${esc(fila.usuario)}</span><span>${duracion(fila.segundos)}</span><span>↑ ${bytesLegibles(fila.entrada)} ↓ ${bytesLegibles(fila.salida)}</span><span><strong>${fila.estado}</strong></span></div>`,
     });
     registrarPaquete(respuesta, 'Servidor → NAS');
   }
@@ -843,25 +878,23 @@
 
   /* ================= Eventos ================= */
 
-  function reiniciarTodo() {
-    cancelarFlujo();
-    cerrarSesion();
-    Servidor.reiniciar();
-    reiniciarCapas();
-    el.bitacora.innerHTML = '';
-    el.usuario.value = '';
-    el.contrasena.value = '';
-    el.secretoMalo.checked = false;
-    avisar('');
-    bloquearUI(false);
-    mostrarIntro();
-  }
-
   function enlazarEventos() {
     el.formLogin.addEventListener('submit', (e) => {
       e.preventDefault();
       if (!estado.listo) return;
       flujoConexion(el.usuario.value.trim(), el.contrasena.value);
+    });
+
+    // Al terminar, clic (o Enter) en un paso lo vuelve a mostrar
+    el.capas.addEventListener('click', (e) => {
+      if (e.target.closest('.info')) return;
+      const li = e.target.closest('.capa[data-vista]');
+      if (li) verVista(li.dataset.capa);
+    });
+    el.capas.addEventListener('keydown', (e) => {
+      if (e.key !== 'Enter' && e.key !== ' ') return;
+      const li = e.target.closest('.capa[data-vista]');
+      if (li && e.target === li) { e.preventDefault(); verVista(li.dataset.capa); }
     });
 
     el.formMfa.addEventListener('submit', (e) => {
@@ -898,14 +931,10 @@
     document.addEventListener('click', (e) => { if (buscarInfo(e)) e.preventDefault(); });
     window.addEventListener('resize', ocultarTip);
 
-    el.siguiente.addEventListener('click', pasoSiguiente);
-    el.modoPaso.addEventListener('click', () => cambiarModo('paso'));
-    el.modoAuto.addEventListener('click', () => cambiarModo('auto'));
-    el.reiniciar.addEventListener('click', reiniciarTodo);
     el.interim.addEventListener('click', () => flujoContabilidad('Interim-Update'));
     el.salir.addEventListener('click', () => flujoContabilidad('Stop'));
 
-    // Flecha derecha, Av Pág o el control de presentaciones avanzan el paso
+    // Flecha derecha, Av Pág o el control de presentaciones adelantan el paso
     document.addEventListener('keydown', (e) => {
       if (e.key === 'Escape') ocultarTip();
       const etiqueta = (e.target.tagName || '').toLowerCase();

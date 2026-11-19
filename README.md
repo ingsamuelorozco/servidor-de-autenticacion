@@ -1,6 +1,6 @@
 # Servidor de autenticación AAA con RADIUS
 
-Demostración interactiva para la exposición de **Redes y seguridad** en la **Universidad Santiago de Cali**. Muestra cómo un servidor AAA decide **quién entra a la red** (autenticación), **qué puede hacer** (autorización) y **deja registro de lo que hizo** (contabilidad), paquete por paquete.
+Demostración interactiva para la exposición de **Redes y comunicaciones** en la **Universidad Santiago de Cali**. Muestra cómo un servidor AAA decide **quién entra a la red** (autenticación), **qué puede hacer** (autorización) y **deja registro de lo que hizo** (contabilidad), paquete por paquete.
 
 Todo cabe en una sola pantalla, sin hacer scroll. Arriba está la arquitectura: **Cliente → NAS → Servidor AAA → Base de usuarios**, con una flecha que indica qué mensaje está viajando en cada momento. Debajo hay tres columnas:
 
@@ -27,7 +27,6 @@ Otros casos para mostrar:
 
 - **Contraseña mala o usuario que no existe:** el servidor responde Access-Reject (3).
 - **Código de verificación equivocado:** el Access-Challenge falla y llega un Access-Reject.
-- **Casilla "secreto compartido equivocado":** el servidor descarta el paquete sin responder.
 
 ## La secuencia
 
@@ -44,11 +43,11 @@ Otros casos para mostrar:
 
 Con la sesión abierta, los botones **Enviar reporte** y **Desconectarse** mandan los mensajes Interim-Update y Stop.
 
-## Controles
+## Cómo avanza
 
-- **Paso a paso:** se avanza con el botón "Siguiente paso", la flecha derecha o el control de presentaciones (Av Pág).
-- **Automático:** avanza solo cada 2,8 segundos.
-- **Reiniciar todo:** limpia la sesión, los paquetes y el registro de contabilidad.
+Los pasos avanzan solos cada 10 segundos, para alcanzar a leerlos. Con la flecha derecha o Av Pág (o el control de presentaciones) se puede adelantar un paso.
+
+Cuando termina, se puede hacer clic en cualquier paso de la secuencia para volver a verlo con su paquete y su flecha. Si un paso tuvo varias partes (por ejemplo, Accounting-Request y Accounting-Response), cada clic muestra la siguiente.
 
 ## Estructura
 
