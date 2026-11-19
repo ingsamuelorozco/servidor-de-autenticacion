@@ -1,31 +1,46 @@
 /*
  * app.js
- * Conecta el formulario con el servidor simulado y va mostrando
- * cada capa del recorrido en la columna central y en el inspector.
+ * Hace de cliente y de NAS, habla con el servidor AAA simulado y va mostrando
+ * cada paso de la secuencia RADIUS en la columna central y en el inspector.
  */
 (() => {
   'use strict';
 
-  const IP_CLIENTE = '181.49.23.105';
-  const ESPERA_AUTO_MS = 2600;
+  const ESPERA_AUTO_MS = 2800;
+
+  /* El NAS de la demo: un punto de acceso Wi-Fi con 802.1X. */
+  const NAS = {
+    ip: '10.10.0.2',
+    nombre: 'AP-Biblioteca',
+    puerto: 7,
+    ssid: 'USC-Campus',
+    mac: 'A0-B1-C2-D3-E4-F5',
+  };
+  const MAC_CLIENTE = '3C-52-82-A1-7F-09';
+  const SECRETO_EQUIVOCADO = 'secreto-viejo-2019';
+
+  const ACLS = {
+    'ACL-ESTUDIANTES': ['permit tcp any any eq 80, 443   (navegar)', 'permit udp any any eq 53         (DNS)', 'deny   ip any 10.99.0.0/16       (red de gestión)', 'permit ip any 10.20.0.0/16       (red de estudiantes)'],
+    'ACL-GESTION': ['permit ip any any                 (acceso total)'],
+  };
 
   const CAPAS = [
-    { id: 'cliente', nombre: 'Cliente (navegador)', resumen: 'Valida el formulario y arma la petición' },
-    { id: 'tls', nombre: 'HTTPS / TLS', resumen: 'Cifra todo lo que viaja por la red' },
-    { id: 'gateway', nombre: 'Gateway y límite de intentos', resumen: 'Frena los ataques de fuerza bruta' },
-    { id: 'usuario', nombre: 'Búsqueda del usuario', resumen: 'Consulta la base de datos' },
-    { id: 'clave', nombre: 'Verificación de contraseña', resumen: 'Compara hashes, nunca texto plano' },
-    { id: 'mfa', nombre: 'Segundo factor (MFA)', resumen: 'Algo que tienes, además de algo que sabes' },
-    { id: 'token', nombre: 'Emisión del token (JWT)', resumen: 'Firma la identidad del usuario' },
-    { id: 'recurso', nombre: 'Recurso protegido', resumen: 'Verifica el token en cada petición' },
+    { id: 'solicitud', nombre: 'Cliente → NAS', resumen: 'Solicitud de acceso con las credenciales' },
+    { id: 'request', nombre: 'NAS → Servidor', resumen: 'Access-Request (1) por UDP 1812' },
+    { id: 'servidor', nombre: 'Servidor AAA', resumen: 'Valida el NAS y descifra la contraseña' },
+    { id: 'base', nombre: 'Base de usuarios', resumen: 'Autenticación: ¿quién eres?' },
+    { id: 'challenge', nombre: 'Servidor → NAS', resumen: 'Access-Challenge (11), opcional' },
+    { id: 'decision', nombre: 'Servidor → NAS', resumen: 'Access-Accept (2) / Reject (3)' },
+    { id: 'aplicar', nombre: 'NAS → Cliente', resumen: 'Autorización: aplica VLAN y ACL o niega' },
+    { id: 'acct', nombre: 'Contabilidad', resumen: 'Accounting-Request (4) / Response (5)' },
   ];
 
   const ESTADOS = {
     pendiente: 'Pendiente',
-    ok: 'Superada',
-    error: 'Rechazada',
+    ok: 'Superado',
+    error: 'Rechazado',
     espera: 'Esperando',
-    omitida: 'Omitida',
+    omitida: 'Omitido',
     na: 'No aplica',
   };
 
@@ -41,22 +56,26 @@
     usuario: $('usuario'),
     contrasena: $('contrasena'),
     verClave: $('verClave'),
+    secretoMalo: $('secretoMalo'),
     entrar: $('btnEntrar'),
     mensaje: $('mensajeLogin'),
     tarjetaLogin: $('tarjetaLogin'),
     tarjetaMfa: $('tarjetaMfa'),
+    textoDesafio: $('textoDesafio'),
     formMfa: $('formMfa'),
     codigoMfa: $('codigoMfa'),
     codigoTelefono: $('codigoTelefono'),
     venceTelefono: $('venceTelefono'),
     tarjetaSesion: $('tarjetaSesion'),
     nombreSesion: $('nombreSesion'),
-    rolSesion: $('rolSesion'),
-    tokenCorto: $('tokenCorto'),
-    venceSesion: $('venceSesion'),
-    perfil: $('btnPerfil'),
-    alterar: $('btnAlterar'),
-    vencido: $('btnVencido'),
+    grupoSesion: $('grupoSesion'),
+    vlanSesion: $('vlanSesion'),
+    ipSesion: $('ipSesion'),
+    aclSesion: $('aclSesion'),
+    privSesion: $('privSesion'),
+    tiempoSesion: $('tiempoSesion'),
+    datosSesion: $('datosSesion'),
+    interim: $('btnInterim'),
     salir: $('btnSalir'),
     tablaPruebas: $('tablaPruebas'),
     bitacora: $('bitacora'),
@@ -73,6 +92,7 @@
     resolverMfa: null,
     relojMfa: null,
     sesion: null,
+    identificador: Math.floor(Math.random() * 200),
   };
 
   class FlujoCancelado extends Error {}
@@ -85,8 +105,25 @@
 
   const json = (obj) => JSON.stringify(obj, null, 2);
   const hora = () => new Date().toLocaleTimeString('es-CO', { hour12: false });
-  const fechaUnix = (s) => new Date(s * 1000).toLocaleString('es-CO', { hour12: false });
-  const recortar = (texto, n = 14) => (texto.length > n ? `${texto.slice(0, n)}…` : texto);
+  const recortar = (t, n = 14) => (t.length > n ? `${t.slice(0, n)}…` : t);
+  const hex = (b) => Cripto.aHex(b);
+  const hexEspaciado = (b) => Cripto.aHex(b, ' ');
+
+  function siguienteId() {
+    estado.identificador = (estado.identificador + 1) % 256;
+    return estado.identificador;
+  }
+
+  function bytesLegibles(n) {
+    if (n < 1024) return `${n} B`;
+    if (n < 1024 ** 2) return `${(n / 1024).toFixed(1)} KB`;
+    return `${(n / 1024 ** 2).toFixed(2)} MB`;
+  }
+
+  function duracion(s) {
+    const m = Math.floor(s / 60);
+    return m ? `${m} min ${s % 60} s` : `${s} s`;
+  }
 
   /* ================= Bloques del inspector ================= */
 
@@ -100,35 +137,115 @@
     nota(html, tipo = 'info') {
       return `<div class="nota nota-${tipo}">${html}</div>`;
     },
-    jwt(partes) {
-      const [h, p, f] = partes.map(esc);
-      return `<pre class="jwt"><code><span class="jwt-h">${h}</span>.<span class="jwt-p">${p}</span>.<span class="jwt-f">${f}</span></code></pre>`;
-    },
     comparar(referencia, calculado) {
       let html = '';
       for (let i = 0; i < calculado.length; i++) {
-        const igual = calculado[i] === referencia[i];
-        html += `<span class="${igual ? 'igual' : 'dif'}">${esc(calculado[i])}</span>`;
+        html += `<span class="${calculado[i] === referencia[i] ? 'igual' : 'dif'}">${esc(calculado[i])}</span>`;
       }
       return `<pre><code>${html}</code></pre>`;
     },
     chequeos(lista) {
       return `<ul class="chequeos">${lista.map(([ok, texto]) => `<li data-ok="${ok}"><span class="marca">${ok ? '✓' : '✗'}</span><span>${texto}</span></li>`).join('')}</ul>`;
     },
-    tablaBD(resaltar) {
-      const filas = Servidor.tablaBaseDatos().map((r) => `
-        <tr class="${r.usuario === resaltar ? 'resaltada' : ''}">
-          <td>${esc(r.usuario)}</td>
-          <td><code>${esc(recortar(r.salt, 10))}</code></td>
-          <td><code>${esc(recortar(r.hash, 16))}</code></td>
-          <td>${esc(r.rol)}</td>
-          <td>${r.mfa ? 'sí' : 'no'}</td>
-        </tr>`).join('');
+    tabla(cabeceras, filas, resaltar = -1) {
       return `<div class="tabla-scroll"><table class="tabla-bd">
-        <thead><tr><th>usuario</th><th>salt</th><th>hash_contrasena</th><th>rol</th><th>mfa</th></tr></thead>
-        <tbody>${filas}</tbody></table></div>`;
+        <thead><tr>${cabeceras.map((c) => `<th>${esc(c)}</th>`).join('')}</tr></thead>
+        <tbody>${filas.map((f, i) => `<tr class="${i === resaltar ? 'resaltada' : ''}">${f.map((c) => `<td>${c}</td>`).join('')}</tr>`).join('')}</tbody>
+      </table></div>`;
+    },
+    tablaUsuarios(resaltar) {
+      const lista = Servidor.tablaUsuarios();
+      return B.tabla(
+        ['usuario', 'salt', 'hash_contrasena', 'grupo', '2FA', 'VLAN'],
+        lista.map((r) => [esc(r.usuario), `<code>${esc(recortar(r.salt, 10))}</code>`, `<code>${esc(recortar(r.hash, 16))}</code>`, esc(r.grupo), r.mfa ? 'sí' : 'no', String(r.autorizacion.vlan)]),
+        lista.findIndex((r) => r.usuario === resaltar)
+      );
+    },
+    tablaContabilidad(resaltar) {
+      const lista = Servidor.tablaContabilidad();
+      return B.tabla(
+        ['Acct-Session-Id', 'usuario', 'NAS', 'IP', 'último', 'duración', 'entrada', 'salida', 'estado'],
+        lista.map((s) => [`<code>${esc(s.sesionId)}</code>`, esc(s.usuario), esc(s.nas), esc(s.ip), esc(s.ultimo), duracion(s.segundos), bytesLegibles(s.entrada), bytesLegibles(s.salida), esc(s.estado)]),
+        lista.findIndex((s) => s.sesionId === resaltar)
+      );
+    },
+
+    /* Dibuja el paquete como en la diapositiva: Code | Identifier | Length / Authenticator / Attributes */
+    paquete(bytes, { ocultarValor = false } = {}) {
+      const p = Radius.leer(bytes);
+      const atributos = p.atributos.map((a) => `
+        <tr>
+          <td class="pq-num">${a.type}</td>
+          <td class="pq-num">${a.length}</td>
+          <td>${esc(Radius.nombreAtributo(a.type))}</td>
+          <td><code>${esc(ocultarValor && a.type === 2 ? '••••' : Radius.valorLegible(a.type, a.value))}</code></td>
+        </tr>`).join('');
+      return `
+        <div class="paquete">
+          <div class="pq-bits"><span>0</span><span>8</span><span>16</span><span>31</span></div>
+          <div class="pq-fila pq-cabecera">
+            <div class="pq-campo hx-code"><small>Code</small><strong>${p.code} · ${esc(Radius.CODIGOS[p.code] || '?')}</strong></div>
+            <div class="pq-campo hx-id"><small>Identifier</small><strong>${p.id}</strong></div>
+            <div class="pq-campo pq-doble hx-len"><small>Length</small><strong>${p.length} bytes</strong></div>
+          </div>
+          <div class="pq-fila">
+            <div class="pq-campo pq-completo hx-auth"><small>Authenticator (16 bytes)</small><code>${hexEspaciado(p.authenticator)}</code></div>
+          </div>
+          <div class="pq-fila">
+            <div class="pq-campo pq-completo pq-atributos">
+              <small>Attributes (lista de TLV: Type, Length, Value)</small>
+              ${p.atributos.length ? `<table class="tabla-tlv">
+                <thead><tr><th>Type</th><th>Len</th><th>Atributo</th><th>Value</th></tr></thead>
+                <tbody>${atributos}</tbody>
+              </table>` : '<em class="pq-vacio">Sin atributos</em>'}
+            </div>
+          </div>
+        </div>`;
+    },
+
+    /* Volcado hexadecimal coloreado: lo que de verdad viaja por el cable */
+    hex(bytes) {
+      const p = Radius.leer(bytes);
+      const clase = new Array(bytes.length).fill('');
+      clase[0] = 'hx-code';
+      clase[1] = 'hx-id';
+      clase[2] = clase[3] = 'hx-len';
+      for (let i = 4; i < 20; i++) clase[i] = 'hx-auth';
+      p.atributos.forEach((a, k) => {
+        clase[a.offset] = clase[a.offset + 1] = 'hx-tl';
+        for (let i = a.offset + 2; i < a.offset + a.length; i++) clase[i] = k % 2 ? 'hx-v2' : 'hx-v1';
+      });
+      let html = '';
+      for (let fila = 0; fila < bytes.length; fila += 16) {
+        html += `<span class="hx-off">${fila.toString(16).padStart(4, '0')}</span>  `;
+        for (let i = fila; i < Math.min(fila + 16, bytes.length); i++) {
+          html += `<span class="${clase[i]}">${bytes[i].toString(16).padStart(2, '0')}</span> `;
+        }
+        html += '\n';
+      }
+      return `<pre class="hexdump"><code>${html}</code></pre>
+        <p class="leyenda"><span class="hx-code">Code</span> · <span class="hx-id">Identifier</span> · <span class="hx-len">Length</span> · <span class="hx-auth">Authenticator</span> · <span class="hx-tl">Type y Length</span> · <span class="hx-v1">Value</span></p>`;
     },
   };
+
+  /* ================= Diagrama de arquitectura ================= */
+
+  function red(enlace, direccion, texto, tipo = 'normal') {
+    document.querySelectorAll('.enlace').forEach((e) => {
+      const activo = Number(e.dataset.enlace) === enlace;
+      e.classList.toggle('activo', activo);
+      e.dataset.dir = activo ? direccion : '';
+      e.dataset.tipo = activo ? tipo : '';
+      e.querySelector('.enlace-msg').textContent = activo ? texto : '';
+    });
+    const nodos = [['cliente', 'nas'], ['nas', 'servidor'], ['servidor', 'bd']][enlace] || [];
+    document.querySelectorAll('.nodo').forEach((n) => n.classList.toggle('activo', nodos.includes(n.dataset.nodo)));
+  }
+
+  function nodoSolo(nodo) {
+    red(-1);
+    document.querySelectorAll('.nodo').forEach((n) => n.classList.toggle('activo', n.dataset.nodo === nodo));
+  }
 
   /* ================= Capas ================= */
 
@@ -156,6 +273,10 @@
     enfocarCapa(null);
   }
 
+  function capasNoAplican(...ids) {
+    ids.forEach((c) => fijarCapa(c, 'na'));
+  }
+
   /* titulo y texto son HTML escrito aquí; todo dato del usuario se pasa por esc() */
   function mostrar(id, est, { titulo, texto, bloques = [] }) {
     fijarCapa(id, est);
@@ -163,7 +284,7 @@
     const i = CAPAS.findIndex((c) => c.id === id);
     el.inspector.innerHTML = `
       <div class="insp-cabecera">
-        <span class="insp-capa">Capa ${i + 1} &middot; ${CAPAS[i].nombre}</span>
+        <span class="insp-capa">Paso ${i + 1} &middot; ${CAPAS[i].nombre}</span>
         <span class="insignia" data-estado="${est}">${ESTADOS[est]}</span>
       </div>
       <h3>${titulo}</h3>
@@ -178,15 +299,30 @@
   }
 
   function mostrarIntro() {
-    mostrarLibre('Bienvenido a la demostración', `
-      <p class="insp-texto">Escribe un usuario y una contraseña a la izquierda y presiona <strong>Iniciar sesión</strong>. Cada capa del centro se irá encendiendo y aquí verás exactamente qué datos se mueven en ese momento.</p>
+    red(-1);
+    mostrarLibre('¿Qué es un servidor AAA?', `
+      <p class="insp-texto">Un servicio centralizado que decide <strong>quién entra a la red</strong>, <strong>qué puede hacer</strong> y <strong>deja registro de lo que hizo</strong>.</p>
+      <div class="tres-a">
+        <div><b>A</b><strong>Autenticación</strong><span>¿Quién eres? Usuario y contraseña, certificado o token.</span></div>
+        <div><b>A</b><strong>Autorización</strong><span>¿Qué puedes hacer? VLAN, ACL o nivel de privilegio.</span></div>
+        <div><b>A</b><strong>Contabilidad</strong><span>¿Qué hiciste? Inicio, duración y consumo de la sesión.</span></div>
+      </div>
+      <p class="insp-texto">Escribe un usuario y una contraseña a la izquierda y presiona <strong>Conectarse</strong>. Arriba verás por dónde va cada paquete, en el centro el paso de la secuencia y aquí los bytes reales.</p>
       <ul class="lista">
-        <li><strong>Paso a paso:</strong> avanzas con el botón <em>Siguiente paso</em>, con la flecha derecha del teclado o con el control de presentaciones.</li>
+        <li><strong>Paso a paso:</strong> avanzas con <em>Siguiente paso</em>, la flecha derecha o el control de presentaciones.</li>
         <li><strong>Automático:</strong> avanza solo cada ${(ESPERA_AUTO_MS / 1000).toLocaleString('es-CO')} segundos.</li>
-        <li>Todo lo criptográfico es real: PBKDF2, AES-GCM y HMAC-SHA256 del navegador.</li>
       </ul>
-      ${B.html('Así se ve la base de datos del servidor', B.tablaBD(null))}
-      ${B.nota('Fíjate que <strong>no hay ninguna columna con la contraseña</strong>. El servidor no la conoce: solo guarda un hash. Si alguien roba esta tabla, no puede leer las contraseñas.')}
+      ${B.html('RADIUS frente a TACACS+', B.tabla(['', 'RADIUS', 'TACACS+'], [
+        ['Transporte', 'UDP 1812 / 1813', 'TCP 49'],
+        ['Cifrado', 'Solo la contraseña', 'Todo el cuerpo del paquete'],
+        ['Uso típico', 'Acceso a red: 802.1X, Wi-Fi, VPN', 'Administración de equipos'],
+        ['Estándar', 'IETF (RFC 2865)', 'Cisco'],
+      ]))}
+      ${B.html('Clientes RADIUS (NAS) registrados en el servidor', B.tabla(['IP', 'Nombre', 'Tipo', 'Secreto compartido'], [
+        [NAS.ip, NAS.nombre, 'Punto de acceso Wi-Fi', `<code>${esc(Servidor.cliente(NAS.ip).secreto)}</code>`],
+      ]))}
+      ${B.html('Base de usuarios', B.tablaUsuarios(null))}
+      ${B.nota('El servidor <strong>no guarda ninguna contraseña</strong>, solo un salt y un hash. Y el secreto compartido <strong>nunca viaja por la red</strong>: el NAS y el servidor lo configuran a mano y lo usan para ocultar la contraseña y firmar los paquetes.')}
     `);
   }
 
@@ -227,8 +363,8 @@
 
   function bloquearUI(bloquear) {
     const sinListo = bloquear || !estado.listo;
-    [el.usuario, el.contrasena, el.entrar].forEach((c) => { c.disabled = sinListo; });
-    [el.perfil, el.alterar, el.vencido, el.salir].forEach((c) => { c.disabled = bloquear; });
+    [el.usuario, el.contrasena, el.secretoMalo, el.entrar].forEach((c) => { c.disabled = sinListo; });
+    [el.interim, el.salir].forEach((c) => { c.disabled = bloquear; });
   }
 
   function cancelarFlujo() {
@@ -262,21 +398,30 @@
     el.mensaje.dataset.tipo = tipo || '';
   }
 
-  function registrar(metodo, ruta, codigo, detalle) {
+  /* Bitácora: cada paquete que pasa por la red */
+  function registrar({ desde, hasta, proto, code, nombre, detalle }) {
+    const tipo = { 2: 'ok', 5: 'ok', 3: 'error', 11: 'espera' }[code] || (code === 'x' ? 'error' : 'nada');
     const li = document.createElement('li');
-    const tipo = codigo === 0 ? 'nada' : codigo < 300 ? 'ok' : 'error';
     li.innerHTML = `
       <span class="b-hora">${hora()}</span>
-      <span class="b-metodo">${esc(metodo)}</span>
-      <span class="b-ruta">${esc(ruta)}</span>
-      <span class="b-codigo" data-tipo="${tipo}">${codigo === 0 ? '—' : codigo}</span>
+      <span class="b-ruta">${esc(desde)} → ${esc(hasta)}</span>
+      <span class="b-proto">${esc(proto)}</span>
+      <span class="b-codigo" data-tipo="${tipo}">${code === 'x' ? '✗' : esc(code)}</span>
+      <span class="b-nombre">${esc(nombre)}</span>
       <span class="b-detalle">${esc(detalle)}</span>`;
     el.bitacora.prepend(li);
     el.bitacoraVacia.hidden = true;
   }
 
-  function mostrarMfa(codigo, segundos) {
+  function registrarPaquete(bytes, desde, hasta, detalle) {
+    const p = Radius.leer(bytes);
+    const puerto = p.code === 4 || p.code === 5 ? Servidor.CONFIG.puertoAcct : Servidor.CONFIG.puertoAuth;
+    registrar({ desde, hasta, proto: `UDP ${puerto}`, code: p.code, nombre: `${Radius.CODIGOS[p.code]} · id ${p.id}`, detalle });
+  }
+
+  function mostrarMfa(codigo, segundos, mensaje) {
     el.codigoTelefono.textContent = codigo;
+    el.textoDesafio.textContent = `El NAS muestra el Reply-Message del servidor: "${mensaje}"`;
     el.codigoMfa.value = '';
     el.tarjetaMfa.hidden = false;
     let restantes = segundos;
@@ -302,228 +447,346 @@
     return new Promise((resolver) => { estado.resolverMfa = resolver; });
   }
 
-  function abrirSesion(usuario, emitido) {
+  /* ================= Sesión del usuario en la red ================= */
+
+  function abrirSesion(registro, ip) {
+    const a = registro.autorizacion;
     estado.sesion = {
-      usuario,
-      nombre: emitido.payload.nombre,
-      rol: emitido.payload.rol,
-      token: emitido.token,
-      exp: emitido.payload.exp,
+      usuario: registro.usuario,
+      registro,
+      ip,
+      sesionId: hex(Cripto.aleatorios(4)).toUpperCase(),
+      inicio: Date.now(),
+      entrada: 0,
+      salida: 0,
+      reloj: null,
     };
-    el.nombreSesion.textContent = estado.sesion.nombre;
-    el.rolSesion.textContent = estado.sesion.rol;
-    el.tokenCorto.textContent = `${emitido.token.slice(0, 38)}…`;
-    el.venceSesion.textContent = `El token vence el ${fechaUnix(emitido.payload.exp)}.`;
+    el.nombreSesion.textContent = registro.nombre;
+    el.grupoSesion.textContent = registro.grupo;
+    el.vlanSesion.textContent = `${a.vlan} (${a.vlan === 99 ? 'gestión' : 'estudiantes'})`;
+    el.ipSesion.textContent = ip;
+    el.aclSesion.textContent = a.acl;
+    el.privSesion.textContent = a.privilegio ? `nivel ${a.privilegio} (administrador)` : 'usuario normal';
     el.tarjetaLogin.hidden = true;
     el.tarjetaSesion.hidden = false;
     el.contrasena.value = '';
     avisar('');
+    pintarContadores();
+    estado.sesion.reloj = setInterval(() => {
+      const s = estado.sesion;
+      if (!s) return;
+      s.entrada += 2000 + Math.floor(Math.random() * 60000);
+      s.salida += 10000 + Math.floor(Math.random() * 400000);
+      pintarContadores();
+    }, 1000);
+  }
+
+  function segundosSesion() {
+    return estado.sesion ? Math.floor((Date.now() - estado.sesion.inicio) / 1000) : 0;
+  }
+
+  function pintarContadores() {
+    if (!estado.sesion) return;
+    el.tiempoSesion.textContent = duracion(segundosSesion());
+    el.datosSesion.textContent = `↑ ${bytesLegibles(estado.sesion.entrada)} · ↓ ${bytesLegibles(estado.sesion.salida)}`;
   }
 
   function cerrarSesion() {
+    if (estado.sesion) clearInterval(estado.sesion.reloj);
     estado.sesion = null;
     el.tarjetaSesion.hidden = true;
     el.tarjetaLogin.hidden = false;
   }
 
-  /* ================= Flujo 1: inicio de sesión ================= */
+  /* ================= Flujo 1: autenticación y autorización ================= */
 
-  async function flujoLogin(usuario, contrasena) {
+  function secretos() {
+    const delServidor = Servidor.cliente(NAS.ip).secreto;
+    return { nas: el.secretoMalo.checked ? SECRETO_EQUIVOCADO : delServidor, servidor: delServidor };
+  }
+
+  /* El NAS arma un Access-Request con las credenciales */
+  function armarAccessRequest(usuario, clave, secreto, extra = []) {
+    const { atr, v } = Radius;
+    const ra = Cripto.aleatorios(16);
+    const id = siguienteId();
+    const oculto = Radius.ocultarClave(clave, secreto, ra);
+    const bytes = Radius.peticion(1, id, ra, [
+      atr(1, v.texto(usuario)),
+      atr(2, oculto.cifrado),
+      atr(4, v.ip(NAS.ip)),
+      atr(5, v.entero(NAS.puerto)),
+      atr(61, v.entero(19)),
+      atr(30, v.texto(`${NAS.mac}:${NAS.ssid}`)),
+      atr(31, v.texto(MAC_CLIENTE)),
+      ...extra,
+    ], secreto);
+    return { bytes, ra, id, oculto };
+  }
+
+  /* El servidor recibe: comprueba el NAS, el Message-Authenticator y descifra User-Password */
+  function recibirEnServidor(bytes, secreto) {
+    const p = Radius.leer(bytes);
+    const cli = Servidor.cliente(NAS.ip);
+    const ma = Radius.verificarMA(bytes, secreto);
+    const clave = Radius.revelarClave(Radius.buscar(p, 2), secreto, p.authenticator);
+    return { p, cli, ma, clave, usuario: Cripto.aTexto(Radius.buscar(p, 1)) };
+  }
+
+  async function rechazar(id, peticion, sec, motivo, explicacion) {
+    if (el.capas.querySelector('[data-capa="challenge"]').dataset.estado === 'pendiente') capasNoAplican('challenge');
+    const bytes = Radius.respuesta(3, peticion.id, peticion.ra, [Radius.atr(18, Radius.v.texto('Usuario o contraseña incorrectos'))], sec.servidor);
+    red(1, 'izq', 'Access-Reject (3)', 'error');
+    mostrar('decision', 'error', {
+      titulo: 'Access-Reject (3): acceso denegado',
+      texto: `${explicacion} El servidor responde con un <strong>Access-Reject</strong> al mismo Identifier de la petición. El Reply-Message es genérico a propósito: si dijera "ese usuario no existe", un atacante podría averiguar qué cuentas son reales.`,
+      bloques: [
+        B.html('Paquete de respuesta', B.paquete(bytes)),
+        B.html('Bytes en el cable', B.hex(bytes)),
+      ],
+    });
+    registrarPaquete(bytes, 'Servidor', 'NAS', motivo);
+    await avanzar(id);
+
+    red(0, 'izq', 'Acceso denegado', 'error');
+    mostrar('aplicar', 'error', {
+      titulo: 'El NAS niega el acceso',
+      texto: 'El AP no abre el puerto: el portátil se queda sin VLAN y sin dirección IP. No hubo sesión, así que <strong>no se envía nada de contabilidad</strong>.',
+      bloques: [B.codigo('Estado del puerto en el NAS', json({ puerto: NAS.puerto, mac: MAC_CLIENTE, estado: 'no autorizado', vlan: null }))],
+    });
+    capasNoAplican('acct');
+    registrar({ desde: 'NAS', hasta: 'Cliente', proto: 'EAPOL', code: 'x', nombre: 'EAP-Failure', detalle: 'Acceso denegado' });
+    avisar('Acceso denegado: usuario o contraseña incorrectos.', 'error');
+  }
+
+  async function flujoConexion(usuario, contrasena) {
     const id = iniciarFlujo();
-    avisar('Enviando...', '');
+    avisar('Conectando...', '');
     try {
-      /* ---- Capa 1: cliente ---- */
+      /* ---- Paso 1: Cliente → NAS ---- */
       const errores = [];
       if (!usuario) errores.push('El usuario está vacío.');
-      else if (usuario.length < 3) errores.push('El usuario debe tener al menos 3 caracteres.');
       if (!contrasena) errores.push('La contraseña está vacía.');
-
       if (errores.length) {
-        mostrar('cliente', 'error', {
-          titulo: 'El formulario no se envió',
-          texto: 'El navegador encontró problemas antes de tocar la red. Ojo: esta validación es solo por comodidad. <strong>El servidor siempre vuelve a validar</strong>, porque cualquiera puede saltarse el JavaScript del navegador.',
-          bloques: [B.codigo('Errores encontrados', errores.join('\n'))],
+        nodoSolo('cliente');
+        mostrar('solicitud', 'error', {
+          titulo: 'No se envió la solicitud',
+          texto: 'El portátil no tiene credenciales que mandar. El NAS ni siquiera se entera.',
+          bloques: [B.codigo('Errores', errores.join('\n'))],
         });
-        registrar('POST', '/login', 0, 'No se envió: el formulario tiene errores');
         avisar(errores[0], 'error');
         return;
       }
 
-      const cuerpo = { usuario, contrasena };
-      const peticionHttp = `POST /login HTTP/1.1\nHost: ${Servidor.CONFIG.dominio}\nContent-Type: application/json\n\n${json(cuerpo)}`;
-
-      mostrar('cliente', 'ok', {
-        titulo: 'Se arma la petición de inicio de sesión',
-        texto: 'El navegador revisa que los campos no estén vacíos y arma una petición <code>POST /login</code>. Fíjate: la contraseña va <strong>tal cual la escribiste</strong>. Por eso la siguiente capa es tan importante.',
-        bloques: [B.codigo('Petición HTTP', peticionHttp)],
-      });
-      await avanzar(id);
-
-      /* ---- Capa 2: TLS ---- */
-      const paquete = await Cripto.cifrarAES(peticionHttp);
-      vigente(id);
-      mostrar('tls', 'ok', {
-        titulo: 'La petición viaja cifrada',
-        texto: 'Antes de salir del computador, la petición se cifra con una llave de sesión que solo conocen tu navegador y el servidor (la acordaron en el <em>handshake</em> de TLS). Aquí se usa AES-GCM de 256 bits real.',
+      const sec = secretos();
+      red(0, 'der', 'Solicitud de acceso');
+      mostrar('solicitud', 'ok', {
+        titulo: 'El cliente pide entrar a la red',
+        texto: `El portátil se asocia al Wi-Fi <code>${NAS.ssid}</code>. El punto de acceso es el <strong>NAS</strong> (Network Access Server): no sabe quién es quién, solo deja el puerto cerrado y le pide las credenciales al cliente.`,
         bloques: [
-          B.codigo('Lo que tú enviaste', json(cuerpo)),
-          B.codigo('Lo que ve alguien espiando la red (por ejemplo en un Wi-Fi público)', paquete.base64, 'cifrado'),
-          B.nota('Por esto nunca debes escribir una contraseña en un sitio que no tenga el candado de <strong>HTTPS</strong>.', 'aviso'),
+          B.codigo('Lo que envía el cliente al NAS', json({ red: NAS.ssid, mac: MAC_CLIENTE, usuario, contrasena: '•'.repeat(contrasena.length) })),
+          B.nota('Aquí la contraseña viaja como en PAP para que se vea el mecanismo de RADIUS. En una red 802.1X real va dentro de un túnel EAP cifrado (PEAP o EAP-TTLS) entre el cliente y el servidor.'),
         ],
       });
+      registrar({ desde: 'Cliente', hasta: 'NAS', proto: 'EAPOL', code: '—', nombre: 'EAP-Response/Identity', detalle: `Identidad: ${usuario}` });
       await avanzar(id);
 
-      // El servidor descifra con la misma llave de sesión
-      const textoRecibido = await Cripto.descifrarAES(paquete);
-      vigente(id);
-      const recibido = JSON.parse(textoRecibido.slice(textoRecibido.indexOf('\n\n') + 2));
-
-      /* ---- Capa 3: gateway ---- */
-      const limite = Servidor.revisarLimite(IP_CLIENTE);
-      if (!limite.permitido) {
-        mostrar('gateway', 'error', {
-          titulo: '429 Too Many Requests: demasiados intentos',
-          texto: `Esta IP falló ${limite.fallidos} veces seguidas. El gateway la bloquea ${Servidor.CONFIG.bloqueoSegundos} segundos <strong>sin siquiera consultar la base de datos</strong>. Así se frena la fuerza bruta: probar millones de contraseñas se vuelve imposible.`,
-          bloques: [
-            B.codigo('Estado del límite', json({ ip: IP_CLIENTE, intentosFallidos: limite.fallidos, limite: Servidor.CONFIG.maxIntentos, desbloqueoEn: `${limite.segundosRestantes} s` })),
-            B.codigo('Respuesta del servidor', `HTTP/1.1 429 Too Many Requests\nRetry-After: ${limite.segundosRestantes}\n\n${json({ error: 'demasiados_intentos' })}`),
-          ],
-        });
-        registrar('POST', '/login', 429, `IP bloqueada, faltan ${limite.segundosRestantes} s`);
-        avisar(`Demasiados intentos. Espera ${limite.segundosRestantes} segundos.`, 'error');
-        return;
-      }
-
-      mostrar('gateway', 'ok', {
-        titulo: 'Petición permitida',
-        texto: 'El gateway es la puerta de entrada al sistema: recibe la conexión TLS, revisa cuántas veces ha fallado esta IP y decide si deja pasar la petición hacia el servidor de autenticación.',
+      /* ---- Paso 2: NAS → Servidor, Access-Request ---- */
+      const req = armarAccessRequest(usuario, contrasena, sec.nas);
+      const paso1 = req.oculto.pasos[0];
+      red(1, 'der', `Access-Request (1) · id ${req.id}`);
+      mostrar('request', 'ok', {
+        titulo: 'El NAS arma un Access-Request',
+        texto: `El NAS mete las credenciales en un paquete RADIUS y lo envía al servidor <code>${Servidor.CONFIG.ip}</code> por <strong>UDP ${Servidor.CONFIG.puertoAuth}</strong>. Elige un <em>Identifier</em> para unir la respuesta con esta petición y un <em>Request Authenticator</em> de 16 bytes aleatorios.`,
         bloques: [
-          B.codigo('Revisión del límite de intentos', json({ ip: IP_CLIENTE, intentosFallidos: `${limite.fallidos} de ${Servidor.CONFIG.maxIntentos}`, decision: 'dejar pasar' })),
+          B.html('Formato del paquete', B.paquete(req.bytes)),
+          B.html('Bytes en el cable', B.hex(req.bytes)),
+          B.codigo('Cómo se oculta User-Password (RFC 2865, sección 5.2)',
+            `b1 = MD5(secreto compartido + Request Authenticator)\nc1 = contraseña (rellena con ceros a 16 bytes) XOR b1\n\ncontraseña  ${hexEspaciado(paso1.p)}\nb1          ${hexEspaciado(paso1.b)}\nc1 (viaja)  ${hexEspaciado(paso1.c)}`),
+          B.nota(`Alguien que capture este paquete con Wireshark ve <strong>en claro</strong> el usuario <code>${esc(usuario)}</code>, la IP del NAS y las MAC. Solo la contraseña va oculta. Eso es justo lo que dice la tabla: RADIUS cifra solo la contraseña; TACACS+ cifra todo el cuerpo.`, 'aviso'),
         ],
       });
+      registrarPaquete(req.bytes, 'NAS', 'Servidor', `User-Name: ${usuario}`);
       await avanzar(id);
 
-      /* ---- Capa 4: búsqueda del usuario ---- */
-      const registro = Servidor.buscarUsuario(recibido.usuario);
-      if (!registro) {
-        const fallo = Servidor.registrarFallo(IP_CLIENTE);
-        mostrar('usuario', 'error', {
-          titulo: '401: el usuario no existe',
-          texto: `No hay ningún registro llamado <code>${esc(recibido.usuario)}</code>. Detalle importante: el servidor responde <strong>"usuario o contraseña incorrectos"</strong>, el mismo mensaje que si la contraseña estuviera mala. Si dijera "ese usuario no existe", un atacante podría averiguar qué cuentas son reales.`,
-          bloques: [
-            B.html('Consulta en la base de datos', B.tablaBD(null)),
-            B.codigo('Respuesta del servidor', `HTTP/1.1 401 Unauthorized\n\n${json({ error: 'usuario_o_contrasena_incorrectos' })}`),
-            B.nota(`Intentos fallidos de esta IP: <strong>${fallo.fallidos} de ${Servidor.CONFIG.maxIntentos}</strong>.${fallo.bloqueado ? ' Se alcanzó el límite: la IP queda bloqueada.' : ''}`, 'aviso'),
-          ],
-        });
-        registrar('POST', '/login', 401, 'Usuario o contraseña incorrectos');
-        avisar('Usuario o contraseña incorrectos.', 'error');
-        return;
-      }
-
-      mostrar('usuario', 'ok', {
-        titulo: 'Usuario encontrado',
-        texto: `El servidor busca <code>${esc(registro.usuario)}</code> en la base de datos. Observa qué hay guardado: <strong>no existe ninguna columna con la contraseña</strong>, solo un <em>salt</em> aleatorio y un <em>hash</em>.`,
-        bloques: [
-          B.codigo('Consulta', `SELECT salt, hash_contrasena, rol, mfa\nFROM usuarios\nWHERE usuario = ?;   -- parámetro: '${recibido.usuario}'`),
-          B.html('Resultado', B.tablaBD(registro.usuario)),
-          B.nota('El <code>?</code> es una consulta parametrizada: evita la inyección SQL.'),
-        ],
-      });
-      await avanzar(id);
-
-      /* ---- Capa 5: contraseña ---- */
-      const v = await Servidor.verificarContrasena(registro, recibido.contrasena);
-      vigente(id);
-      const bloquesClave = [
-        B.codigo('Salt de este usuario', registro.salt),
-        B.codigo('Hash guardado en la base de datos', v.guardado),
-        B.html('Hash calculado con la contraseña que llegó', B.comparar(v.guardado, v.calculado), v.coincide ? 'coincide' : 'no-coincide'),
+      /* ---- Paso 3: Servidor AAA recibe ---- */
+      const rec = recibirEnServidor(req.bytes, sec.servidor);
+      nodoSolo('servidor');
+      const chequeos = [
+        [Boolean(rec.cli), `El paquete viene de un NAS registrado (<code>${NAS.ip}</code>, ${esc(rec.cli.nombre)})`],
+        [rec.ma.valido, 'El Message-Authenticator (HMAC-MD5 con el secreto compartido) coincide'],
       ];
 
-      if (!v.coincide) {
-        const fallo = Servidor.registrarFallo(IP_CLIENTE);
-        bloquesClave.push(
-          B.codigo('Respuesta del servidor', `HTTP/1.1 401 Unauthorized\n\n${json({ error: 'usuario_o_contrasena_incorrectos' })}`),
-          B.nota(`Intentos fallidos de esta IP: <strong>${fallo.fallidos} de ${Servidor.CONFIG.maxIntentos}</strong>.${fallo.bloqueado ? ` Se alcanzó el límite: la IP queda bloqueada ${Servidor.CONFIG.bloqueoSegundos} segundos. Intenta otra vez para ver la capa 3 en acción.` : ''}`, 'aviso')
-        );
-        mostrar('clave', 'error', {
-          titulo: '401: la contraseña no coincide',
-          texto: `El servidor calculó el hash de lo que escribiste (PBKDF2-SHA256, ${v.iteraciones.toLocaleString('es-CO')} iteraciones, ${v.ms} ms) y no es igual al guardado. Los caracteres en rojo son los distintos: con cambiar una sola letra, el hash cambia por completo.`,
-          bloques: bloquesClave,
+      if (!rec.ma.valido) {
+        mostrar('servidor', 'error', {
+          titulo: 'Paquete descartado en silencio',
+          texto: 'El NAS usó un secreto compartido distinto al que tiene el servidor, así que la firma del paquete no cuadra. El RFC dice que el servidor debe <strong>descartarlo sin responder</strong>: ni siquiera un Access-Reject, para no darle pistas a un atacante. El NAS reintenta unas veces y se rinde por tiempo de espera.',
+          bloques: [
+            B.html('Revisiones', B.chequeos(chequeos)),
+            B.codigo('Message-Authenticator que calcula el servidor', hex(rec.ma.esperado)),
+            B.html('Message-Authenticator que trae el paquete', B.comparar(hex(rec.ma.esperado), hex(rec.ma.recibido)), 'no-coincide'),
+            B.codigo('Así le queda la contraseña al servidor con el secreto que él conoce', hexEspaciado(rec.clave.bytes)),
+            B.nota('Sin el secreto correcto la contraseña sale como basura: por eso un equipo que no esté registrado no puede usar el servidor.', 'aviso'),
+          ],
         });
-        registrar('POST', '/login', 401, 'Usuario o contraseña incorrectos');
-        avisar(fallo.bloqueado ? 'Demasiados intentos fallidos. IP bloqueada temporalmente.' : 'Usuario o contraseña incorrectos.', 'error');
+        registrar({ desde: 'Servidor', hasta: '—', proto: 'UDP 1812', code: 'x', nombre: 'Descartado', detalle: 'Message-Authenticator inválido, no hay respuesta' });
+        capasNoAplican('base', 'challenge', 'decision', 'aplicar', 'acct');
+        avisar('No se pudo conectar: el servidor de autenticación no responde.', 'error');
         return;
       }
 
-      bloquesClave.push(B.nota('El salt hace que dos personas con la misma contraseña tengan hashes distintos, y que no sirvan las tablas de hashes precalculados.'));
-      mostrar('clave', 'ok', {
-        titulo: 'La contraseña es correcta',
-        texto: `El servidor le pega el salt a la contraseña recibida y la pasa por PBKDF2-SHA256 con ${v.iteraciones.toLocaleString('es-CO')} iteraciones. El resultado es idéntico al hash guardado. Tardó <strong>${v.ms} ms</strong> a propósito: imperceptible para ti, pero muy lento para un atacante que quiere probar millones de contraseñas.`,
+      mostrar('servidor', 'ok', {
+        titulo: 'El servidor valida el paquete',
+        texto: 'Antes de mirar el usuario, el servidor revisa que el paquete venga de un NAS que él conoce y que esté firmado con el secreto compartido. Luego deshace el XOR de la contraseña con ese mismo secreto.',
+        bloques: [
+          B.html('Revisiones', B.chequeos(chequeos)),
+          B.codigo('User-Password recuperada', `c1 XOR MD5(secreto + Request Authenticator)\n= ${hexEspaciado(rec.clave.bytes.slice(0, 16))}\n= "${'•'.repeat(rec.clave.texto.length)}" (${rec.clave.texto.length} caracteres)`),
+          B.nota('El secreto compartido <strong>nunca viajó por la red</strong>. Solo lo conocen el NAS y el servidor porque un administrador lo configuró en los dos.'),
+        ],
+      });
+      await avanzar(id);
+
+      /* ---- Paso 4: Base de usuarios ---- */
+      red(2, 'der', `¿existe "${rec.usuario}"?`);
+      const registro = Servidor.buscarUsuario(rec.usuario);
+      if (!registro) {
+        mostrar('base', 'error', {
+          titulo: 'El usuario no existe',
+          texto: `No hay ningún usuario llamado <code>${esc(rec.usuario)}</code> en la base de usuarios.`,
+          bloques: [B.html('Base de usuarios', B.tablaUsuarios(null))],
+        });
+        await avanzar(id);
+        await rechazar(id, req, sec, 'Usuario no existe', 'La autenticación falló.');
+        return;
+      }
+
+      const v = await Servidor.verificarContrasena(registro, rec.clave.texto);
+      vigente(id);
+      const bloquesClave = [
+        B.html('Registro encontrado', B.tablaUsuarios(registro.usuario)),
+        B.codigo('Hash guardado', v.guardado),
+        B.html('Hash calculado con la contraseña que llegó', B.comparar(v.guardado, v.calculado), v.coincide ? 'coincide' : 'no-coincide'),
+      ];
+      if (!v.coincide) {
+        red(2, 'izq', 'el hash no coincide', 'error');
+        mostrar('base', 'error', {
+          titulo: 'La contraseña no coincide',
+          texto: `El servidor calculó PBKDF2-SHA256 (${v.iteraciones.toLocaleString('es-CO')} iteraciones) con la contraseña recibida y el salt del usuario. No da igual al hash guardado: los caracteres en rojo son los distintos.`,
+          bloques: bloquesClave,
+        });
+        await avanzar(id);
+        await rechazar(id, req, sec, 'Contraseña incorrecta', 'La autenticación falló.');
+        return;
+      }
+      red(2, 'izq', 'el hash coincide', 'ok');
+      mostrar('base', 'ok', {
+        titulo: 'Autenticación correcta: sabemos quién eres',
+        texto: `El usuario <code>${esc(registro.usuario)}</code> existe y el hash de la contraseña coincide con el guardado (PBKDF2-SHA256, ${v.ms} ms). Esta es la primera A: <strong>autenticación</strong>.`,
         bloques: bloquesClave,
       });
       await avanzar(id);
 
-      /* ---- Capa 6: MFA ---- */
+      /* ---- Paso 5: Access-Challenge (opcional) ---- */
+      let ultima = req;
       if (registro.mfa) {
-        const { codigo, segundos } = Servidor.generarMfa(registro.usuario);
-        mostrarMfa(codigo, segundos);
-        mostrar('mfa', 'espera', {
-          titulo: 'Se pide un segundo factor',
-          texto: `La contraseña era correcta, pero <code>${esc(registro.usuario)}</code> tiene MFA activado. El servidor envía un código de 6 dígitos al teléfono del usuario (está simulado a la izquierda). Si alguien robó la contraseña pero no tiene el teléfono, se queda afuera. <strong>Escribe el código para continuar.</strong>`,
-          bloques: [B.codigo('Respuesta intermedia del servidor', `HTTP/1.1 200 OK\n\n${json({ estado: 'mfa_requerido', metodo: 'codigo_al_telefono', venceEn: `${segundos} s` })}`)],
+        const des = Servidor.crearDesafio(registro.usuario);
+        const mensaje = 'Ingrese el código enviado a su teléfono';
+        const chal = Radius.respuesta(11, req.id, req.ra, [
+          Radius.atr(18, Radius.v.texto(mensaje)),
+          Radius.atr(24, des.state),
+        ], sec.servidor);
+        red(1, 'izq', 'Access-Challenge (11)', 'espera');
+        mostrar('challenge', 'espera', {
+          titulo: 'Access-Challenge: se pide un segundo factor',
+          texto: `La contraseña era correcta, pero <code>${esc(registro.usuario)}</code> tiene segundo factor. En lugar de aceptar, el servidor responde con un <strong>Access-Challenge (11)</strong>: un Reply-Message para el usuario y un atributo <strong>State</strong> que el NAS debe devolver para continuar la misma conversación. <strong>Escribe el código del teléfono para seguir.</strong>`,
+          bloques: [B.html('Paquete de respuesta', B.paquete(chal))],
         });
+        registrarPaquete(chal, 'Servidor', 'NAS', 'Pide segundo factor');
+        mostrarMfa(des.codigo, des.segundos, mensaje);
         avisar('');
         const ingresado = await esperarCodigoMfa();
         vigente(id);
         ocultarMfa();
-        const resultado = Servidor.verificarMfa(registro.usuario, ingresado);
-        if (!resultado.valido) {
-          const fallo = Servidor.registrarFallo(IP_CLIENTE);
-          mostrar('mfa', 'error', {
-            titulo: '401: el segundo factor falló',
-            texto: `${esc(resultado.motivo)} Aunque la contraseña era correcta, el servidor no entrega el token. Eso es justamente lo que protege el MFA.`,
-            bloques: [
-              B.codigo('Código recibido', ingresado || '(vacío)'),
-              B.nota(`Intentos fallidos de esta IP: <strong>${fallo.fallidos} de ${Servidor.CONFIG.maxIntentos}</strong>.`, 'aviso'),
-            ],
-          });
-          registrar('POST', '/login/mfa', 401, 'Código de verificación inválido');
-          avisar('Código de verificación inválido. Vuelve a iniciar sesión.', 'error');
+
+        // El NAS devuelve el State y el código en un nuevo Access-Request
+        const req2 = armarAccessRequest(registro.usuario, ingresado || '', sec.nas, [Radius.atr(24, des.state)]);
+        registrarPaquete(req2.bytes, 'NAS', 'Servidor', 'Respuesta al desafío (con State)');
+        const rec2 = recibirEnServidor(req2.bytes, sec.servidor);
+        const r = Servidor.verificarDesafio(Radius.buscar(rec2.p, 24), rec2.usuario, rec2.clave.texto);
+        ultima = req2;
+        red(1, 'der', `Access-Request (1) · id ${req2.id}`);
+        const bloquesReq2 = [
+          B.html('Segundo Access-Request: el código va en User-Password y se devuelve el State', B.paquete(req2.bytes)),
+          B.html('Revisiones', B.chequeos([
+            [rec2.ma.valido, 'Message-Authenticator válido'],
+            [true, 'El State corresponde al desafío enviado'],
+            [r.valido, r.valido ? 'El código coincide y llegó a tiempo' : esc(r.motivo)],
+          ])),
+        ];
+        if (!r.valido) {
+          mostrar('challenge', 'error', { titulo: 'El segundo factor falló', texto: `${esc(r.motivo)} Aunque la contraseña era correcta, sin el segundo factor no se entra.`, bloques: bloquesReq2 });
+          await avanzar(id);
+          await rechazar(id, req2, sec, 'Segundo factor inválido', 'El código de verificación no es válido.');
           return;
         }
-        mostrar('mfa', 'ok', {
+        mostrar('challenge', 'ok', {
           titulo: 'Segundo factor verificado',
-          texto: 'El código coincide y llegó a tiempo. Ahora el servidor tiene dos pruebas: <strong>algo que el usuario sabe</strong> (la contraseña) y <strong>algo que tiene</strong> (el teléfono).',
-          bloques: [B.codigo('Código recibido', ingresado)],
+          texto: 'El NAS mandó un nuevo Access-Request con el código y el mismo State. Ahora el servidor tiene dos pruebas: <strong>algo que el usuario sabe</strong> (la contraseña) y <strong>algo que tiene</strong> (el teléfono).',
+          bloques: bloquesReq2,
         });
-        registrar('POST', '/login/mfa', 200, 'Código correcto');
       } else {
-        mostrar('mfa', 'omitida', {
-          titulo: 'Este usuario no tiene MFA',
-          texto: 'Con usuario y contraseña es suficiente para esta cuenta. En cuentas sensibles se activa un segundo factor: prueba con <code>admin</code> para verlo.',
+        nodoSolo('servidor');
+        mostrar('challenge', 'omitida', {
+          titulo: 'No hace falta Access-Challenge',
+          texto: 'Este paso es <strong>opcional</strong>. Esta cuenta solo necesita usuario y contraseña, así que el servidor pasa directo a decidir. Prueba con <code>admin</code> para ver el desafío.',
         });
       }
       await avanzar(id);
 
-      /* ---- Capa 7: token ---- */
-      const emitido = await Servidor.emitirToken(registro.usuario);
-      vigente(id);
-      Servidor.limpiarFallos(IP_CLIENTE);
-      mostrar('token', 'ok', {
-        titulo: '200 OK: se emite el token',
-        texto: 'Con la identidad comprobada, el servidor crea un <strong>JWT</strong> (JSON Web Token): tres partes en Base64URL separadas por puntos. La tercera es una <strong>firma HMAC-SHA256</strong> hecha con una llave secreta que solo conoce el servidor. Cualquiera puede <em>leer</em> el token, pero nadie puede <em>modificarlo</em> sin que la firma deje de coincidir.',
+      /* ---- Paso 6: Access-Accept con atributos de autorización ---- */
+      const a = registro.autorizacion;
+      const accept = Radius.respuesta(2, ultima.id, ultima.ra, Servidor.atributosAutorizacion(registro), sec.servidor);
+      const autNas = Radius.verificarAutenticador(accept, ultima.ra, sec.nas);
+      red(1, 'izq', 'Access-Accept (2)', 'ok');
+      mostrar('decision', 'ok', {
+        titulo: 'Access-Accept (2) con los permisos',
+        texto: `El servidor acepta y aprovecha la respuesta para decir <strong>qué puede hacer</strong> este usuario según su grupo <code>${esc(registro.grupo)}</code>. Esta es la segunda A: <strong>autorización</strong>. Los permisos viajan como atributos TLV.`,
         bloques: [
-          B.html('Token completo', `${B.jwt(emitido.partes)}<p class="leyenda"><span class="jwt-h">Header</span> · <span class="jwt-p">Payload (los datos)</span> · <span class="jwt-f">Firma</span></p>`),
-          B.codigo('Header decodificado', json(emitido.header)),
-          B.codigo('Payload decodificado', json(emitido.payload)),
-          B.codigo('Fechas legibles', `iat (emitido):  ${fechaUnix(emitido.payload.iat)}\nexp (vence):    ${fechaUnix(emitido.payload.exp)}`),
-          B.nota('El payload <strong>no está cifrado</strong>, solo codificado. Por eso nunca se pone la contraseña ni datos secretos dentro de un JWT.', 'aviso'),
+          B.html('Paquete de respuesta', B.paquete(accept)),
+          B.html('Qué significa cada atributo', B.tabla(['Atributo', 'Valor', 'Para qué sirve'], [
+            ['Tunnel-Type + Tunnel-Medium-Type', 'VLAN, IEEE-802', 'Le dicen al NAS que va a asignar una VLAN'],
+            ['Tunnel-Private-Group-ID', String(a.vlan), `Mete al usuario en la VLAN ${a.vlan}`],
+            ['Filter-Id', esc(a.acl), 'Nombre de la ACL que el NAS aplica al puerto'],
+            ['Session-Timeout', `${a.sesionMax} s`, 'Tiempo máximo de la sesión'],
+            ...(a.privilegio ? [['Vendor-Specific (26)', `Cisco: priv-lvl=${a.privilegio}`, 'Atributo del fabricante: nivel de privilegio']] : []),
+          ])),
+          B.codigo('Response Authenticator', `MD5(Code + ID + Length + Request Authenticator + Atributos + secreto)\n= ${hexEspaciado(accept.slice(4, 20))}`),
+          B.html('El NAS verifica la respuesta', B.chequeos([
+            [Radius.leer(accept).id === ultima.id, `El Identifier (${ultima.id}) es el de su petición`],
+            [autNas.valido, 'El Response Authenticator cuadra con su secreto: la respuesta viene del servidor de verdad'],
+          ])),
         ],
       });
-      registrar('POST', '/login', 200, `Token emitido para ${registro.usuario}`);
-      abrirSesion(registro.usuario, emitido);
+      registrarPaquete(accept, 'Servidor', 'NAS', `VLAN ${a.vlan}, ${a.acl}`);
+      await avanzar(id);
+
+      /* ---- Paso 7: NAS → Cliente ---- */
+      const ip = `10.${a.vlan}.0.${40 + Math.floor(Math.random() * 150)}`;
+      red(0, 'izq', `Acceso concedido · VLAN ${a.vlan}`, 'ok');
+      mostrar('aplicar', 'ok', {
+        titulo: 'El NAS aplica la autorización',
+        texto: `El AP abre el puerto, mete al portátil en la <strong>VLAN ${a.vlan}</strong> y le aplica la ACL <code>${esc(a.acl)}</code>. El DHCP de esa VLAN le entrega la IP <code>${ip}</code>. El servidor AAA decidió; el NAS es el que hace cumplir.`,
+        bloques: [
+          B.codigo('Estado del puerto en el NAS', json({ puerto: NAS.puerto, mac: MAC_CLIENTE, usuario: registro.usuario, estado: 'autorizado', vlan: a.vlan, acl: a.acl, ip, sessionTimeout: `${a.sesionMax} s` })),
+          B.codigo(`Reglas de ${a.acl}`, ACLS[a.acl].join('\n')),
+        ],
+      });
+      registrar({ desde: 'NAS', hasta: 'Cliente', proto: 'EAPOL', code: '—', nombre: 'EAP-Success', detalle: `VLAN ${a.vlan}, IP ${ip}` });
+      abrirSesion(registro, ip);
+      await avanzar(id);
+
+      /* ---- Paso 8: Contabilidad Start ---- */
+      await pasoContabilidad(id, 'Start');
     } catch (e) {
       if (e instanceof FlujoCancelado) return;
       console.error(e);
@@ -533,106 +796,78 @@
     }
   }
 
-  /* ================= Flujo 2: recurso protegido ================= */
+  /* ================= Flujo 2: contabilidad ================= */
 
-  function alterarToken(token) {
-    const [h, p, f] = token.split('.');
-    const payload = JSON.parse(Cripto.base64urlATexto(p));
-    const antes = { rol: payload.rol, exp: payload.exp };
-    payload.rol = 'admin';
-    payload.exp += 365 * 24 * 60 * 60;
-    return {
-      token: `${h}.${Cripto.textoABase64url(JSON.stringify(payload))}.${f}`,
-      antes,
-      despues: { rol: payload.rol, exp: payload.exp },
+  const TIPO_ACCT = { Start: 1, Stop: 2, 'Interim-Update': 3 };
+
+  async function pasoContabilidad(id, tipo) {
+    const s = estado.sesion;
+    const sec = secretos().servidor;
+    const { atr, v } = Radius;
+    const segundos = segundosSesion();
+    const lista = [
+      atr(40, v.entero(TIPO_ACCT[tipo])),
+      atr(44, v.texto(s.sesionId)),
+      atr(1, v.texto(s.usuario)),
+      atr(4, v.ip(NAS.ip)),
+      atr(5, v.entero(NAS.puerto)),
+      atr(8, v.ip(s.ip)),
+      atr(31, v.texto(MAC_CLIENTE)),
+    ];
+    if (tipo !== 'Start') {
+      lista.push(atr(46, v.entero(segundos)), atr(42, v.entero(s.entrada)), atr(43, v.entero(s.salida)));
+    }
+    if (tipo === 'Stop') lista.push(atr(49, v.entero(1)));
+
+    const idPkt = siguienteId();
+    const peticion = Radius.contabilidad(4, idPkt, lista, sec);
+    const textos = {
+      Start: 'Apenas el usuario queda conectado, el NAS avisa al servidor que <strong>abrió una sesión</strong>. Esta es la tercera A: <strong>contabilidad</strong>. Va por otro puerto, <strong>UDP 1813</strong>.',
+      'Interim-Update': 'Mientras la sesión sigue abierta, el NAS manda reportes periódicos con el <strong>tiempo y los bytes</strong> consumidos hasta ahora. En una red real los manda solo, cada cierto intervalo.',
+      Stop: 'El usuario se desconectó. El NAS cierra el puerto y manda el <strong>total consumido</strong> y la causa de terminación.',
     };
+    red(1, 'der', `Accounting-Request (4) · ${tipo}`);
+    mostrar('acct', 'espera', {
+      titulo: `Accounting-Request (4): Acct-Status-Type = ${tipo}`,
+      texto: textos[tipo],
+      bloques: [
+        B.html('Formato del paquete', B.paquete(peticion)),
+        B.codigo('Request Authenticator de contabilidad', `MD5(Code + ID + Length + 16 bytes en cero + Atributos + secreto)\n= ${hexEspaciado(peticion.slice(4, 20))}`),
+        B.nota('En contabilidad no hay contraseña. El autenticador solo sirve para que el servidor compruebe que el reporte lo mandó un NAS que conoce el secreto.'),
+      ],
+    });
+    registrarPaquete(peticion, 'NAS', 'Servidor', `${tipo} · sesión ${s.sesionId}`);
+    await avanzar(id);
+
+    const ver = Radius.verificarAutenticador(peticion, new Uint8Array(16), sec);
+    const fila = Servidor.registrarContabilidad({ tipo, sesionId: s.sesionId, usuario: s.usuario, nas: NAS.nombre, ip: s.ip, segundos, entrada: s.entrada, salida: s.salida });
+    const respuesta = Radius.contabilidad(5, idPkt, [], sec, peticion.slice(4, 20));
+    red(1, 'izq', 'Accounting-Response (5)', 'ok');
+    mostrar('acct', 'ok', {
+      titulo: 'Accounting-Response (5): registro guardado',
+      texto: `El servidor verifica el reporte, lo guarda y confirma con un <strong>Accounting-Response</strong>. Si no llega la confirmación, el NAS reenvía el reporte. ${tipo === 'Stop' ? 'La sesión queda cerrada con su total.' : 'Con estos registros se puede saber quién estuvo conectado, cuánto tiempo y cuánto consumió.'}`,
+      bloques: [
+        B.html('Revisiones del servidor', B.chequeos([[ver.valido, 'El Request Authenticator cuadra con el secreto compartido']])),
+        B.html('Paquete de respuesta (sin atributos, solo confirma)', B.paquete(respuesta)),
+        B.html('Registro de contabilidad en el servidor', B.tablaContabilidad(fila.sesionId)),
+      ],
+    });
+    registrarPaquete(respuesta, 'Servidor', 'NAS', `${tipo} registrado`);
   }
 
-  async function flujoRecurso(variante) {
+  async function flujoContabilidad(tipo) {
     if (!estado.sesion) return;
     const id = iniciarFlujo();
     try {
-      let token = estado.sesion.token;
-      const extras = [];
-      let textoVariante = '';
-
-      if (variante === 'alterado') {
-        const a = alterarToken(token);
-        token = a.token;
-        textoVariante = ' <strong>Pero esta vez un atacante editó el payload</strong> para darse permisos de administrador y alargar la vida del token. No puede rehacer la firma porque no tiene la llave secreta del servidor, así que deja la firma vieja.';
-        extras.push(B.codigo('Lo que cambió el atacante en el payload', `rol: "${a.antes.rol}"  ->  "${a.despues.rol}"\nexp: ${fechaUnix(a.antes.exp)}  ->  ${fechaUnix(a.despues.exp)}`));
-      } else if (variante === 'vencido') {
-        token = (await Servidor.emitirToken(estado.sesion.usuario, { vencido: true })).token;
-        vigente(id);
-        textoVariante = ' <strong>Esta vez se usa un token viejo:</strong> lo emitió el servidor de verdad (la firma es válida), pero hace más de 15 minutos.';
+      capasNoAplican('solicitud', 'request', 'servidor', 'base', 'challenge', 'decision', 'aplicar');
+      if (tipo === 'Stop') {
+        clearInterval(estado.sesion.reloj);
+        registrar({ desde: 'Cliente', hasta: 'NAS', proto: 'EAPOL', code: '—', nombre: 'EAPOL-Logoff', detalle: 'El usuario se desconecta' });
       }
-
-      /* ---- Capa 1 ---- */
-      const peticionHttp = `GET /api/perfil HTTP/1.1\nHost: ${Servidor.CONFIG.dominio}\nAuthorization: Bearer ${token}`;
-      mostrar('cliente', 'ok', {
-        titulo: 'Petición a una ruta protegida',
-        texto: `Ya no se envía la contraseña. Ahora el navegador adjunta el token en la cabecera <code>Authorization</code> de cada petición, como quien muestra el carné en la portería de la universidad.${textoVariante}`,
-        bloques: [B.codigo('Petición HTTP', peticionHttp), ...extras],
-      });
-      await avanzar(id);
-
-      /* ---- Capa 2 ---- */
-      const paquete = await Cripto.cifrarAES(peticionHttp);
-      vigente(id);
-      mostrar('tls', 'ok', {
-        titulo: 'El token también viaja cifrado',
-        texto: 'Igual que en el login, todo va por HTTPS. Si alguien robara el token en la red podría hacerse pasar por ti mientras no venza; por eso HTTPS es obligatorio y los tokens duran poco.',
-        bloques: [B.codigo('Lo que ve alguien espiando la red', paquete.base64, 'cifrado')],
-      });
-      await avanzar(id);
-
-      /* ---- Capa 3 ---- */
-      mostrar('gateway', 'ok', {
-        titulo: 'Ruta protegida: se revisa el token',
-        texto: 'El gateway ve que <code>/api/perfil</code> es una ruta protegida. La petición trae un token, así que la deja pasar al verificador. Si no trajera ninguno, respondería 401 de una vez.',
-        bloques: [B.codigo('Decisión', json({ ruta: '/api/perfil', requiereToken: true, traeToken: true, decision: 'verificar token' }))],
-      });
-      await avanzar(id);
-
-      ['usuario', 'clave', 'mfa', 'token'].forEach((c) => fijarCapa(c, 'na'));
-
-      /* ---- Capa 8 ---- */
-      const v = await Servidor.verificarToken(token);
-      vigente(id);
-
-      const chequeos = [
-        [Boolean(v.algoritmoValido), `Algoritmo permitido (<code>${esc(v.header ? v.header.alg : '?')}</code>)`],
-        [Boolean(v.firmaValida), 'La firma coincide con la que calcula el servidor'],
-        [Boolean(v.vigente), v.payload ? `No está vencido (vence: ${esc(fechaUnix(v.payload.exp))})` : 'No está vencido'],
-      ];
-      const bloques = [];
-      if (v.partes) bloques.push(B.html('Token recibido', B.jwt(v.partes)));
-      if (v.payload) bloques.push(B.codigo('Payload que dice traer', json(v.payload)));
-      if (v.firmaEsperada) {
-        bloques.push(
-          B.codigo('Firma que calcula el servidor con su llave secreta', v.firmaEsperada),
-          B.html('Firma que trae el token', B.comparar(v.firmaEsperada, v.firmaRecibida), v.firmaValida ? 'coincide' : 'no-coincide')
-        );
-      }
-      bloques.push(B.html('Revisiones', B.chequeos(chequeos)));
-
-      if (v.valido) {
-        const perfil = Servidor.obtenerPerfil(v.payload.sub);
-        bloques.push(B.codigo('Respuesta del servidor', `HTTP/1.1 200 OK\n\n${json(perfil)}`));
-        mostrar('recurso', 'ok', {
-          titulo: '200 OK: acceso concedido',
-          texto: 'El servidor recalcula la firma con su llave secreta y es idéntica a la del token. Revisa que no esté vencido y responde con los datos. <strong>No volvió a pedir la contraseña ni consultó una tabla de sesiones</strong>: el token se basta solo. Por eso las capas 4 a 7 no se usan aquí.',
-          bloques,
-        });
-        registrar('GET', '/api/perfil', 200, `Perfil de ${v.payload.sub}`);
-      } else {
-        bloques.push(B.codigo('Respuesta del servidor', `HTTP/1.1 401 Unauthorized\nWWW-Authenticate: Bearer error="invalid_token"\n\n${json({ error: 'token_invalido' })}`));
-        mostrar('recurso', 'error', {
-          titulo: '401 Unauthorized: acceso negado',
-          texto: `${esc(v.motivo)} ${variante === 'alterado' ? 'Bastó con cambiar una palabra del payload para que la firma ya no corresponda. Así el servidor detecta cualquier manipulación.' : ''}`,
-          bloques,
-        });
-        registrar('GET', '/api/perfil', 401, v.motivo);
+      await pasoContabilidad(id, tipo);
+      if (tipo === 'Stop') {
+        cerrarSesion();
+        avisar('Te desconectaste de la red.', 'ok');
       }
     } catch (e) {
       if (e instanceof FlujoCancelado) return;
@@ -647,12 +882,13 @@
   function reiniciarTodo() {
     cancelarFlujo();
     cerrarSesion();
-    Servidor.limpiarFallos(IP_CLIENTE);
+    Servidor.reiniciar();
     reiniciarCapas();
     el.bitacora.innerHTML = '';
     el.bitacoraVacia.hidden = false;
     el.usuario.value = '';
     el.contrasena.value = '';
+    el.secretoMalo.checked = false;
     avisar('');
     bloquearUI(false);
     mostrarIntro();
@@ -662,7 +898,7 @@
     el.formLogin.addEventListener('submit', (e) => {
       e.preventDefault();
       if (!estado.listo) return;
-      flujoLogin(el.usuario.value.trim(), el.contrasena.value);
+      flujoConexion(el.usuario.value.trim(), el.contrasena.value);
     });
 
     el.formMfa.addEventListener('submit', (e) => {
@@ -685,31 +921,16 @@
     el.modoPaso.addEventListener('click', () => cambiarModo('paso'));
     el.modoAuto.addEventListener('click', () => cambiarModo('auto'));
     el.reiniciar.addEventListener('click', reiniciarTodo);
-
-    el.perfil.addEventListener('click', () => flujoRecurso('normal'));
-    el.alterar.addEventListener('click', () => flujoRecurso('alterado'));
-    el.vencido.addEventListener('click', () => flujoRecurso('vencido'));
-    el.salir.addEventListener('click', () => {
-      cancelarFlujo();
-      const usuario = estado.sesion ? estado.sesion.usuario : '';
-      cerrarSesion();
-      reiniciarCapas();
-      bloquearUI(false);
-      registrar('POST', '/logout', 200, `Sesión cerrada (${usuario})`);
-      mostrarLibre('Sesión cerrada', `
-        <p class="insp-texto">Con JWT el cierre de sesión pasa en el cliente: el navegador <strong>borra el token</strong> y ya no puede demostrar quién es. El servidor no guarda sesiones, por eso los tokens tienen una vida corta (aquí ${Servidor.CONFIG.vidaTokenSegundos / 60} minutos).</p>
-        ${B.nota('En sistemas más estrictos el servidor también mantiene una lista de tokens revocados.')}`);
-    });
+    el.interim.addEventListener('click', () => flujoContabilidad('Interim-Update'));
+    el.salir.addEventListener('click', () => flujoContabilidad('Stop'));
 
     // Flecha derecha, Av Pág o el control de presentaciones avanzan el paso
     document.addEventListener('keydown', (e) => {
       const etiqueta = (e.target.tagName || '').toLowerCase();
       if (etiqueta === 'input' || etiqueta === 'textarea') return;
-      if (e.key === 'ArrowRight' || e.key === 'PageDown') {
-        if (estado.resolverPaso) {
-          e.preventDefault();
-          pasoSiguiente();
-        }
+      if ((e.key === 'ArrowRight' || e.key === 'PageDown') && estado.resolverPaso) {
+        e.preventDefault();
+        pasoSiguiente();
       }
     });
   }
@@ -750,7 +971,7 @@
       return;
     }
     estado.listo = true;
-    el.entrar.textContent = 'Iniciar sesión';
+    el.entrar.textContent = 'Conectarse';
     bloquearUI(false);
     mostrarIntro();
   }

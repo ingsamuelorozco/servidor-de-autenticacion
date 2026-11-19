@@ -1,14 +1,14 @@
-# Servidor de autenticación por capas
+# Servidor de autenticación AAA con RADIUS
 
-Demostración interactiva para la exposición en la **Universidad Santiago de Cali**. Muestra qué pasa por dentro de un servidor de autenticación desde que el usuario le da clic a "Iniciar sesión" hasta que puede usar una ruta protegida.
+Demostración interactiva para la exposición de **Redes y seguridad** en la **Universidad Santiago de Cali**. Muestra cómo un servidor AAA decide **quién entra a la red** (autenticación), **qué puede hacer** (autorización) y **deja registro de lo que hizo** (contabilidad), paquete por paquete.
 
-La página tiene tres columnas:
+Arriba está la arquitectura: **Cliente → NAS → Servidor AAA → Base de usuarios**, con una flecha que indica qué mensaje está viajando en cada momento. Debajo hay tres columnas:
 
-1. **Lo que ve el usuario:** el formulario de inicio de sesión, el teléfono para el código de verificación y la sesión iniciada.
-2. **El recorrido por capas:** las 8 capas por las que pasa la petición, que se van marcando como superadas, rechazadas o no aplican.
-3. **¿Qué está pasando?:** los datos reales de cada paso, como la petición HTTP, el texto cifrado, los hashes, el JWT y la respuesta del servidor.
+1. **Lo que ve el usuario:** el formulario para conectarse al Wi-Fi, el teléfono con el código de verificación y la sesión conectada (VLAN, IP, ACL, tiempo y datos consumidos).
+2. **La secuencia RADIUS:** los 8 pasos, que se marcan como superados, rechazados u omitidos.
+3. **¿Qué está pasando?:** cada paquete dibujado como en el formato de RADIUS (Code, Identifier, Length, Authenticator y atributos TLV), sus bytes en hexadecimal y los cálculos de MD5.
 
-Abajo hay una bitácora con todas las peticiones y sus códigos HTTP.
+Abajo se van guardando todos los paquetes que pasan por la red, con su código.
 
 ## Cómo abrirlo
 
@@ -16,38 +16,47 @@ No necesita instalar nada ni internet. Solo hay que abrir `index.html` con doble
 
 ## Usuarios de prueba
 
-| Usuario | Contraseña | MFA |
-|---------|------------|-----|
-| ana     | usc2026    | no  |
-| admin   | admin123   | sí  |
+| Usuario | Contraseña | Segundo factor | Autorización |
+|---------|------------|----------------|--------------|
+| ana     | usc2026    | no             | VLAN 20, ACL-ESTUDIANTES |
+| admin   | admin123   | sí (Access-Challenge) | VLAN 99, ACL-GESTION, priv-lvl 15 |
 
 En la tabla de la página se puede dar clic al nombre del usuario para llenar el formulario.
 
-## Las capas
+Otros casos para mostrar:
 
-| # | Capa | Qué muestra |
+- **Contraseña mala o usuario que no existe:** el servidor responde Access-Reject (3).
+- **Código de verificación equivocado:** el Access-Challenge falla y llega un Access-Reject.
+- **Casilla "secreto compartido equivocado":** el servidor descarta el paquete sin responder.
+
+## La secuencia
+
+| # | Paso | Qué muestra |
 |---|------|-------------|
-| 1 | Cliente (navegador) | Validación del formulario y la petición `POST /login` |
-| 2 | HTTPS / TLS | La petición cifrada con AES-GCM, lo que vería alguien espiando la red |
-| 3 | Gateway y límite de intentos | Bloqueo de la IP con 429 después de 3 fallos (30 segundos) |
-| 4 | Búsqueda del usuario | La tabla de la base de datos: solo salt y hash, nunca la contraseña |
-| 5 | Verificación de contraseña | PBKDF2-SHA256 con 100.000 iteraciones y la comparación de hashes |
-| 6 | Segundo factor (MFA) | Código de 6 dígitos enviado a un teléfono simulado |
-| 7 | Emisión del token (JWT) | Header, payload y firma HMAC-SHA256 por colores |
-| 8 | Recurso protegido | Verificación de la firma y la fecha de vencimiento en cada petición |
+| 1 | Cliente → NAS | Solicitud de acceso con las credenciales |
+| 2 | NAS → Servidor | Access-Request (1) por UDP 1812. La contraseña va oculta con MD5(secreto + Request Authenticator) y el resto va en claro |
+| 3 | Servidor AAA | Revisa que el NAS esté registrado, verifica el Message-Authenticator (HMAC-MD5) y descifra la contraseña |
+| 4 | Base de usuarios | Busca al usuario y compara el hash PBKDF2 (nunca guarda la contraseña) |
+| 5 | Servidor → NAS | Access-Challenge (11), opcional: pide el segundo factor con Reply-Message y State |
+| 6 | Servidor → NAS | Access-Accept (2) con atributos de autorización (VLAN, Filter-Id, Session-Timeout, Vendor-Specific) o Access-Reject (3) |
+| 7 | NAS → Cliente | El NAS aplica la VLAN y la ACL, o niega el acceso |
+| 8 | Contabilidad | Accounting-Request (4) Start, Interim-Update o Stop por UDP 1813, y su Accounting-Response (5) |
+
+Con la sesión abierta, los botones **Enviar reporte** y **Desconectarse** mandan los mensajes Interim-Update y Stop.
 
 ## Controles
 
 - **Paso a paso:** se avanza con el botón "Siguiente paso", la flecha derecha o el control de presentaciones (Av Pág).
-- **Automático:** avanza solo cada 2,6 segundos.
-- **Reiniciar todo:** limpia la sesión, la bitácora y el bloqueo de intentos.
+- **Automático:** avanza solo cada 2,8 segundos.
+- **Reiniciar todo:** limpia la sesión, los paquetes y el registro de contabilidad.
 
 ## Estructura
 
 ```
 index.html        estructura de la página
 css/estilos.css   estilos, modo oscuro automático y diseño para celular
-js/cripto.js      funciones criptográficas con la Web Crypto API
-js/servidor.js    servidor de autenticación simulado (usuarios, límite de intentos, MFA, JWT)
-js/app.js         conecta el formulario con el servidor y dibuja cada capa
+js/cripto.js      MD5, HMAC-MD5 y PBKDF2
+js/radius.js      arma y lee paquetes RADIUS byte a byte (RFC 2865 y 2866)
+js/servidor.js    servidor AAA simulado (NAS registrados, base de usuarios, desafíos, contabilidad)
+js/app.js         hace de cliente y de NAS, y dibuja cada paso
 ```

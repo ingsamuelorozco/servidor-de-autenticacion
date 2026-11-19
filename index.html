@@ -3,17 +3,17 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Servidor de Autenticación por Capas</title>
-  <meta name="description" content="Demostración interactiva de cómo funciona un servidor de autenticación, capa por capa. Exposición - Universidad Santiago de Cali.">
+  <title>Servidor de Autenticación AAA</title>
+  <meta name="description" content="Demostración interactiva de un servidor AAA con RADIUS: autenticación, autorización y contabilidad, paquete por paquete. Exposición - Universidad Santiago de Cali.">
   <link rel="stylesheet" href="css/estilos.css">
 </head>
 <body>
 
   <header class="encabezado">
     <div class="encabezado-texto">
-      <p class="institucion">Universidad Santiago de Cali &middot; Exposición</p>
-      <h1>¿Cómo funciona un servidor de autenticación?</h1>
-      <p class="bajada">Escribe tus credenciales y mira, capa por capa, todo lo que pasa desde que das clic hasta que el servidor te deja entrar.</p>
+      <p class="institucion">Redes y seguridad &middot; Universidad Santiago de Cali</p>
+      <h1>Servidor de autenticación AAA con RADIUS</h1>
+      <p class="bajada">Conéctate a la red y mira cada paquete que viaja entre el cliente, el NAS y el servidor AAA: <strong>quién eres</strong> (autenticación), <strong>qué puedes hacer</strong> (autorización) y <strong>qué hiciste</strong> (contabilidad).</p>
     </div>
     <div class="controles">
       <div class="modo" role="group" aria-label="Modo de ejecución">
@@ -26,8 +26,35 @@
   </header>
 
   <div id="avisoCripto" class="aviso" hidden>
-    Este navegador no tiene disponible la Web Crypto API. Abre la página con Chrome, Edge o Firefox actualizados (desde un archivo local o desde https).
+    Este navegador no tiene disponible la Web Crypto API. Abre la página con Chrome, Edge o Firefox actualizados.
   </div>
+
+  <!-- Arquitectura: Cliente - NAS - Servidor AAA - Base de usuarios -->
+  <section class="arquitectura" aria-label="Arquitectura AAA">
+    <div class="nodo" data-nodo="cliente">
+      <span class="nodo-titulo">Cliente</span>
+      <span class="nodo-sub">Portátil del usuario</span>
+      <code>MAC 3c:52:82:a1:7f:09</code>
+    </div>
+    <div class="enlace" data-enlace="0"><span class="enlace-msg"></span><span class="enlace-linea"></span><span class="enlace-proto">802.1X / EAPOL</span></div>
+    <div class="nodo" data-nodo="nas">
+      <span class="nodo-titulo">NAS</span>
+      <span class="nodo-sub">AP-Biblioteca (Wi-Fi)</span>
+      <code>10.10.0.2</code>
+    </div>
+    <div class="enlace" data-enlace="1"><span class="enlace-msg"></span><span class="enlace-linea"></span><span class="enlace-proto">RADIUS · UDP 1812 / 1813</span></div>
+    <div class="nodo" data-nodo="servidor">
+      <span class="nodo-titulo">Servidor AAA</span>
+      <span class="nodo-sub">RADIUS</span>
+      <code>10.10.0.10</code>
+    </div>
+    <div class="enlace" data-enlace="2"><span class="enlace-msg"></span><span class="enlace-linea"></span><span class="enlace-proto">consulta local</span></div>
+    <div class="nodo" data-nodo="bd">
+      <span class="nodo-titulo">Base de usuarios</span>
+      <span class="nodo-sub">Local (en la vida real: AD o LDAP)</span>
+      <code>hash PBKDF2</code>
+    </div>
+  </section>
 
   <main class="tablero">
 
@@ -36,7 +63,7 @@
       <h2 id="tituloCliente" class="titulo-columna">Lo que ve el usuario</h2>
 
       <div class="tarjeta" id="tarjetaLogin">
-        <h3>Iniciar sesión</h3>
+        <h3>Conectarse a la red <span class="chip">USC-Campus</span></h3>
         <form id="formLogin" novalidate>
           <label class="campo">
             <span>Usuario</span>
@@ -49,6 +76,10 @@
               <button type="button" id="verClave" class="btn-ver" aria-label="Mostrar contraseña">Ver</button>
             </span>
           </label>
+          <label class="casilla">
+            <input type="checkbox" id="secretoMalo">
+            <span>Simular un NAS con el <strong>secreto compartido equivocado</strong></span>
+          </label>
           <button type="submit" id="btnEntrar" class="btn btn-primario btn-bloque" disabled>Preparando servidor...</button>
           <p class="mensaje" id="mensajeLogin" role="status" aria-live="polite"></p>
         </form>
@@ -56,8 +87,9 @@
 
       <div class="tarjeta" id="tarjetaMfa" hidden>
         <h3>Verificación en dos pasos</h3>
+        <p class="pequeno sin-margen" id="textoDesafio"></p>
         <div class="telefono" aria-label="Teléfono simulado del usuario">
-          <span class="telefono-app">Mensaje de Autenticador</span>
+          <span class="telefono-app">Mensaje del Autenticador</span>
           <span class="telefono-codigo" id="codigoTelefono">------</span>
           <span class="telefono-vence" id="venceTelefono"></span>
         </div>
@@ -71,32 +103,35 @@
       </div>
 
       <div class="tarjeta" id="tarjetaSesion" hidden>
-        <h3>Sesión iniciada</h3>
-        <p class="saludo">Hola, <strong id="nombreSesion"></strong> <span class="chip" id="rolSesion"></span></p>
-        <p class="pequeno">El navegador guardó este token y lo enviará en cada petición:</p>
-        <code class="token-corto" id="tokenCorto"></code>
-        <p class="pequeno" id="venceSesion"></p>
+        <h3>Conectado a USC-Campus</h3>
+        <p class="saludo"><strong id="nombreSesion"></strong> <span class="chip" id="grupoSesion"></span></p>
+        <dl class="datos-sesion">
+          <dt>VLAN</dt><dd id="vlanSesion"></dd>
+          <dt>Dirección IP</dt><dd id="ipSesion"></dd>
+          <dt>ACL</dt><dd id="aclSesion"></dd>
+          <dt>Privilegio</dt><dd id="privSesion"></dd>
+          <dt>Tiempo</dt><dd id="tiempoSesion">0 s</dd>
+          <dt>Datos</dt><dd id="datosSesion">0 B</dd>
+        </dl>
         <div class="acciones">
-          <button type="button" id="btnPerfil" class="btn btn-primario btn-bloque">Pedir mi perfil (GET /api/perfil)</button>
-          <button type="button" id="btnAlterar" class="btn btn-peligro btn-bloque">Alterar el token (volverme admin)</button>
-          <button type="button" id="btnVencido" class="btn btn-secundario btn-bloque">Usar un token vencido</button>
-          <button type="button" id="btnSalir" class="btn btn-texto btn-bloque">Cerrar sesión</button>
+          <button type="button" id="btnInterim" class="btn btn-primario btn-bloque">Enviar reporte (Interim-Update)</button>
+          <button type="button" id="btnSalir" class="btn btn-secundario btn-bloque">Desconectarse (Stop)</button>
         </div>
       </div>
 
       <div class="tarjeta tarjeta-suave">
         <h3>Usuarios de prueba</h3>
         <table class="tabla-pruebas">
-          <thead><tr><th>Usuario</th><th>Contraseña</th><th>MFA</th></tr></thead>
+          <thead><tr><th>Usuario</th><th>Contraseña</th><th>Segundo factor</th></tr></thead>
           <tbody id="tablaPruebas"></tbody>
         </table>
-        <p class="pequeno">Prueba también: una contraseña mala tres veces seguidas, o un usuario que no existe.</p>
+        <p class="pequeno">Prueba también: una contraseña mala, un usuario que no existe o un código de verificación equivocado.</p>
       </div>
     </section>
 
-    <!-- Columna 2: las capas -->
+    <!-- Columna 2: la secuencia -->
     <section class="columna columna-capas" aria-labelledby="tituloCapas">
-      <h2 id="tituloCapas" class="titulo-columna">El recorrido por capas</h2>
+      <h2 id="tituloCapas" class="titulo-columna">La secuencia RADIUS</h2>
       <ol id="listaCapas" class="capas"></ol>
     </section>
 
@@ -109,17 +144,18 @@
   </main>
 
   <section class="bitacora-seccion" aria-labelledby="tituloBitacora">
-    <h2 id="tituloBitacora" class="titulo-columna">Bitácora de peticiones al servidor</h2>
-    <p class="pequeno" id="bitacoraVacia">Todavía no se ha enviado ninguna petición.</p>
+    <h2 id="tituloBitacora" class="titulo-columna">Paquetes RADIUS capturados en la red</h2>
+    <p class="pequeno" id="bitacoraVacia">Todavía no ha pasado ningún paquete.</p>
     <ol id="bitacora" class="bitacora"></ol>
   </section>
 
   <footer class="pie">
-    <p>Demostración educativa. El "servidor" corre dentro del navegador con JavaScript para poder ver cada paso; la criptografía sí es real (PBKDF2, AES-GCM y HMAC-SHA256 de la Web Crypto API). Un sistema real separa cliente y servidor en máquinas distintas.</p>
+    <p>Demostración educativa. El NAS y el servidor AAA corren dentro del navegador con JavaScript para poder ver cada paso, pero los paquetes RADIUS se arman byte a byte como dicen los RFC 2865 y 2866, con MD5 y HMAC-MD5 reales. Por simplicidad la contraseña viaja como en PAP; en una red 802.1X real va dentro de un túnel EAP (PEAP o EAP-TTLS).</p>
     <p>Universidad Santiago de Cali</p>
   </footer>
 
   <script src="js/cripto.js"></script>
+  <script src="js/radius.js"></script>
   <script src="js/servidor.js"></script>
   <script src="js/app.js"></script>
 </body>
